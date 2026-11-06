@@ -506,11 +506,14 @@
     { id: 'gizmoRotate', label: 'Rotate gizmo', keys: ['E'] },
     { id: 'snapVertex', label: 'Snap vertex', keys: ['S'] },
     { id: 'snap15', label: 'Snap 15°', keys: ['A'] },
-    { id: 'snap1mm', label: 'Snap 1 mm', keys: ['Z'] },
+    { id: 'snap1mm', label: 'Snap', keys: ['Z'] }, // id kept from the old "Snap 1 mm" so saved bindings still apply: now the bounding-box snap
     { id: 'deleteSel', label: 'Delete', keys: ['Delete'] },
     { id: 'undo', label: 'Undo', keys: ['Ctrl+Z'] },
     { id: 'redo', label: 'Redo', keys: ['Ctrl+Y', 'Ctrl+Shift+Z'] },
     { id: 'deselect', label: 'Deselect', keys: ['Escape'] },
+    { id: 'toggleMode', label: 'Switch Preview / Assembly', keys: ['Q'] },
+    { id: 'fourView', label: 'Toggle four view', keys: ['4'] },
+    { id: 'fullscreen', label: 'Toggle full screen', keys: ['Alt+Enter'] },
     { id: 'frameAll', label: 'Frame all', keys: ['F'] },
     { id: 'resetView', label: 'Reset view', keys: ['R'] },
     { id: 'wireframe', label: 'Toggle wireframe', keys: ['X'] },
@@ -608,7 +611,51 @@
     return id;
   }
 
+  // ---------------------------------------------------------------- user categories (viewer preference, not part of the assembly JSON)
+
+  var CAT_MAX = 40;
+
+  // -> {name} (trimmed, inner whitespace collapsed) or {error}. existing = all category names; self = the name being renamed (may change case)
+  function checkCategoryName(name, existing, self) {
+    if (typeof name !== 'string') return { error: 'Category name must be text' };
+    var n = name.trim().replace(/\s+/g, ' ');
+    if (!n) return { error: 'Category name is empty' };
+    if (n.length > CAT_MAX) return { error: 'Category name is too long (max ' + CAT_MAX + ' characters)' };
+    var low = n.toLowerCase(), list = existing || [];
+    for (var i = 0; i < list.length; i++) {
+      if (typeof list[i] === 'string' && list[i].toLowerCase() === low && list[i] !== self) {
+        return { error: 'A category named "' + list[i] + '" already exists' };
+      }
+    }
+    return { name: n };
+  }
+
+  // saved (anything, e.g. parsed localStorage) = {custom: [names], over: {partId: category}}; baseCats = the built-in/imported category names.
+  // -> {custom, over}: invalid or clashing custom names dropped, overrides only for valid ids and for categories that exist (canonical spelling).
+  function mergeCategories(saved, baseCats) {
+    var custom = [], over = Object.create(null), base = Array.isArray(baseCats) ? baseCats.filter(function (c) { return typeof c === 'string'; }) : [];
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return { custom: custom, over: over };
+    if (Array.isArray(saved.custom)) {
+      saved.custom.forEach(function (c) {
+        var r = checkCategoryName(c, base.concat(custom));
+        if (r.name) custom.push(r.name);
+      });
+    }
+    var all = base.concat(custom);
+    if (saved.over && typeof saved.over === 'object' && !Array.isArray(saved.over)) {
+      Object.keys(saved.over).forEach(function (id) {
+        var v = saved.over[id];
+        if (!id || BAD_IDS.indexOf(id) >= 0 || typeof v !== 'string') return;
+        for (var i = 0; i < all.length; i++) if (all[i].toLowerCase() === v.trim().toLowerCase()) { over[id] = all[i]; return; }
+      });
+    }
+    return { custom: custom, over: over };
+  }
+
   return {
+    CAT_MAX: CAT_MAX,
+    checkCategoryName: checkCategoryName,
+    mergeCategories: mergeCategories,
     KEY_ACTIONS: KEY_ACTIONS,
     FIXED_KEYS: FIXED_KEYS,
     defaultBindings: defaultBindings,

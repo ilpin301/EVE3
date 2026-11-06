@@ -678,7 +678,7 @@ test('keys: findConflict names the other action and refuses fixed keys', functio
   assert.strictEqual(IO.findConflict(b, 'frameAll', 'Ctrl+Z'), 'undo');
   assert.strictEqual(IO.findConflict(b, 'undo', 'Ctrl+Z'), null, 'own binding is not a conflict');
   assert.strictEqual(IO.findConflict(b, 'frameAll', 'Ctrl+Shift+Z'), 'redo');
-  assert.strictEqual(IO.findConflict(b, 'frameAll', 'Q'), null);
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'J'), null);
   assert.strictEqual(IO.findConflict(b, 'frameAll', 'ArrowUp'), '@fixed');
   assert.strictEqual(IO.findConflict(b, 'frameAll', 'Backspace'), '@fixed');
 });
@@ -695,8 +695,8 @@ test('keys: mergeBindings ignores corrupt, unknown, duplicate and fixed entries'
   assert.deepStrictEqual(m.wireframe, [], 'empty list = cleared');
   assert.deepStrictEqual(m.redo, d.redo, 'untouched actions keep defaults');
   // saved combos that duplicate each other: the earlier action in table order wins
-  m = IO.mergeBindings({ gizmoMove: ['Q'], redo: ['Q'] });
-  assert.deepStrictEqual(m.gizmoMove, ['Q']);
+  m = IO.mergeBindings({ gizmoMove: ['J'], redo: ['J'] });
+  assert.deepStrictEqual(m.gizmoMove, ['J']);
   assert.deepStrictEqual(m.redo, ['Ctrl+Y', 'Ctrl+Shift+Z'], 'duplicate dropped, list emptied -> default');
   // a saved combo that is the default of an action missing from saved loses; its own list falls back to the default
   m = IO.mergeBindings({ gizmoRotate: ['W'] });
@@ -720,23 +720,86 @@ test('keys: Snap 15/1mm defaults; stale saved auto-rotate = A (old default) is d
   assert.deepStrictEqual(m.autoRotate, ['T'], 'stale override dropped, default restored');
   assert.deepStrictEqual(m, d);
   // stale override next to other valid overrides
-  m = IO.mergeBindings({ autoRotate: ['A'], frameAll: ['Q'] });
-  assert.deepStrictEqual([m.snap15, m.autoRotate, m.frameAll], [['A'], ['T'], ['Q']]);
+  m = IO.mergeBindings({ autoRotate: ['A'], frameAll: ['J'] });
+  assert.deepStrictEqual([m.snap15, m.autoRotate, m.frameAll], [['A'], ['T'], ['J']]);
   // the user moved Snap 15 away: A is theirs to give to auto-rotate
-  m = IO.mergeBindings({ autoRotate: ['A'], snap15: ['Q'] });
-  assert.deepStrictEqual([m.snap15, m.autoRotate], [['Q'], ['A']]);
+  m = IO.mergeBindings({ autoRotate: ['A'], snap15: ['J'] });
+  assert.deepStrictEqual([m.snap15, m.autoRotate], [['J'], ['A']]);
 });
 
 test('keys: merge(overrides(merge(x))) is stable', function () {
-  var x = { gizmoMove: ['Q'], redo: ['Ctrl+Shift+Z'], deselect: [], frameAll: ['Ctrl+Alt+F'] };
+  var x = { gizmoMove: ['J'], redo: ['Ctrl+Shift+Z'], deselect: [], frameAll: ['Ctrl+Alt+F'] };
   var a = IO.mergeBindings(x), o = IO.bindingOverrides(a), b = IO.mergeBindings(JSON.parse(JSON.stringify(o)));
   assert.deepStrictEqual(b, a);
   assert.deepStrictEqual(Object.keys(o).sort(), ['deselect', 'frameAll', 'gizmoMove', 'redo']);
   assert.deepStrictEqual(IO.bindingOverrides(IO.defaultBindings()), {});
-  assert.strictEqual(act(a, 'q'), 'gizmoMove');
+  assert.strictEqual(act(a, 'j'), 'gizmoMove');
   assert.strictEqual(act(a, 'w'), null);
   assert.strictEqual(act(a, 'Escape'), null);
   assert.strictEqual(act(a, 'f', { ctrlKey: true, altKey: true }), 'frameAll');
+});
+
+test('keys: Q switches mode, 4 toggles four view, Alt+Enter toggles full screen (free defaults, conflicts handled)', function () {
+  var d = IO.defaultBindings();
+  assert.deepStrictEqual([d.toggleMode, d.fourView, d.fullscreen], [['Q'], ['4'], ['Alt+Enter']]);
+  assert.strictEqual(act(d, 'q'), 'toggleMode');
+  assert.strictEqual(act(d, 'Q'), 'toggleMode', 'Caps Lock');
+  assert.strictEqual(act(d, '4'), 'fourView');
+  assert.strictEqual(act(d, 'Enter', { altKey: true }), 'fullscreen');
+  assert.strictEqual(act(d, 'Enter', { ctrlKey: true }), 'addToAssembly', 'Ctrl+Enter is untouched');
+  assert.strictEqual(IO.findConflict(d, 'frameAll', 'Q'), 'toggleMode');
+  assert.strictEqual(IO.findConflict(d, 'frameAll', '4'), 'fourView');
+  assert.strictEqual(IO.findConflict(d, 'toggleMode', 'Q'), null, 'its own key is no conflict');
+  // a saved override that takes a default of an action missing from the save loses; the owner keeps its key
+  var m = IO.mergeBindings({ frameAll: ['Q'] });
+  assert.deepStrictEqual([m.toggleMode, m.frameAll], [['Q'], ['F']]);
+  // both saved: the user's choice stands, and a cleared mode key frees Q
+  m = IO.mergeBindings({ toggleMode: [], frameAll: ['Q'] });
+  assert.deepStrictEqual([m.toggleMode, m.frameAll], [[], ['Q']]);
+  assert.strictEqual(IO.matchAction(m, 'Q'), 'frameAll');
+  // every default is still unique across the whole table
+  var all = {};
+  IO.KEY_ACTIONS.forEach(function (a) { a.keys.forEach(function (c) { assert.ok(!all[c], 'duplicate default ' + c); all[c] = 1; }); });
+});
+
+// ---------------------------------------------------------------- user categories
+
+test('categories: checkCategoryName trims, rejects empty/long/duplicate (case-insensitive)', function () {
+  var ex = ['Beams', 'Axles', 'Mine'];
+  assert.deepStrictEqual(IO.checkCategoryName('  My   Box ', ex), { name: 'My Box' });
+  assert.ok(IO.checkCategoryName('', ex).error);
+  assert.ok(IO.checkCategoryName('   ', ex).error);
+  assert.ok(IO.checkCategoryName(5, ex).error);
+  assert.ok(IO.checkCategoryName(null, ex).error);
+  assert.ok(IO.checkCategoryName(new Array(IO.CAT_MAX + 2).join('x'), ex).error, 'too long');
+  assert.deepStrictEqual(IO.checkCategoryName(new Array(IO.CAT_MAX + 1).join('x'), ex).name.length, IO.CAT_MAX, 'exactly the max is fine');
+  assert.match(IO.checkCategoryName('beams', ex).error, /"Beams" already exists/);
+  assert.match(IO.checkCategoryName(' AXLES ', ex).error, /already exists/);
+  assert.deepStrictEqual(IO.checkCategoryName('mine', ex, 'Mine'), { name: 'mine' }, 'rename may change only the case of itself');
+  assert.ok(IO.checkCategoryName('beams', ex, 'Mine').error, 'but not take another name');
+  assert.deepStrictEqual(IO.checkCategoryName('x'), { name: 'x' }, 'no list given');
+});
+
+test('categories: mergeCategories survives corrupt data and drops invalid entries', function () {
+  var base = ['Beams', 'Axles', 'Imported'];
+  [null, undefined, 3, 'x', [], true].forEach(function (s) {
+    var m = IO.mergeCategories(s, base);
+    assert.deepStrictEqual(m.custom, []);
+    assert.deepStrictEqual(Object.keys(m.over), []);
+  });
+  var m = IO.mergeCategories({
+    custom: ['Mine', ' mine ', 'beams', '', 7, 'Second  one', null],
+    over: { beam_3m: 'mine', axle_3m: 'AXLES', user_x: 'Imported', ghost: 'Nowhere', '': 'Mine', __proto__: 'x', constructor: 'Mine', bad: 5, beam_5m: 'second one' }
+  }, base);
+  assert.deepStrictEqual(m.custom, ['Mine', 'Second one'], 'duplicate/builtin-clashing/invalid names dropped');
+  assert.deepStrictEqual(Object.assign({}, m.over), { beam_3m: 'Mine', axle_3m: 'Axles', user_x: 'Imported', beam_5m: 'Second one' },
+    'canonical spelling, unknown categories / bad ids / non-strings dropped');
+  m = IO.mergeCategories({ custom: 'nope', over: [1, 2] }, base);
+  assert.deepStrictEqual([m.custom, Object.keys(m.over)], [[], []]);
+  m = IO.mergeCategories({ custom: ['A'] }, null);
+  assert.deepStrictEqual(m.custom, ['A'], 'no base list');
+  var again = IO.mergeCategories(JSON.parse(JSON.stringify({ custom: m.custom, over: m.over })), []);
+  assert.deepStrictEqual(again.custom, ['A'], 'round trip through JSON');
 });
 
 // ---------------------------------------------------------------- runner

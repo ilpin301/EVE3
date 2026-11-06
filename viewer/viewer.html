@@ -38,6 +38,8 @@ aside#asm{width:240px;border-right:0;border-left:1px solid var(--border);padding
 #search{margin:8px;padding:6px 8px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px}
 #list{flex:1;overflow:auto;padding:0 8px 8px}
 #importBox{padding:8px 8px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+#importBox button{padding:4px 8px}
+summary .xbtn{padding:0 5px;margin-left:2px;font-weight:400}
 #importBox input,#importBox select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px}
 #importScale{width:80px}
 #importMsg{width:100%;font-size:12px;color:var(--muted);max-height:8em;overflow:auto}
@@ -65,6 +67,16 @@ summary{cursor:pointer;font-weight:600;padding:4px 2px;color:var(--muted);user-s
 #setMsg{min-height:1.4em;margin:8px 0;font-size:12px}
 #stage{flex:1;min-width:0;display:flex;flex-direction:column}
 #view{flex:1;min-height:0;position:relative;overflow:hidden;background:var(--canvas)}
+#vps{position:absolute;inset:0;display:none;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;pointer-events:none}
+body.four #vps{display:grid}
+.vp{position:relative;min-width:0;min-height:0;pointer-events:auto;touch-action:none;box-shadow:inset 0 0 0 1px var(--border)}
+.vp.max{grid-column:1/3;grid-row:1/3}
+#vps.hasmax .vp:not(.max){display:none}
+.vpl{position:absolute;left:6px;top:4px;font-size:12px;padding:1px 6px;border-radius:4px;background:var(--panel);color:var(--muted);opacity:.9;user-select:none;cursor:default}
+.vpmax{position:absolute;right:4px;top:4px;padding:0 6px;font-size:12px;line-height:18px}
+#fsBar{position:absolute;right:10px;top:10px;z-index:3;display:none}
+body.fs #fsBar{display:flex}
+body.fs header,body.fs aside,body.fs #addRow,body.fs #info,body.fs footer{display:none}
 #rband{position:absolute;z-index:2;pointer-events:none;border:1px solid var(--accent);background:var(--accent);opacity:.3}
 #rband[hidden]{display:none}
 #view canvas{display:block;width:100%;height:100%}
@@ -95,6 +107,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     <button id="bWire" aria-pressed="false">Wireframe</button>
     <button id="bRot" aria-pressed="false">Auto-rotate</button>
     <button id="bGrid" aria-pressed="true">Grid + axes</button>
+    <button id="bFour" aria-pressed="false">Four view</button>
   </div>
   <div class="toolbar">
     <div class="toolbar seg" role="group" aria-label="Gizmo mode">
@@ -102,10 +115,11 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       <button id="bRotG" aria-pressed="false" title="Rotate (E)">Rotate</button>
     </div>
     <button id="bSnapR" aria-pressed="false">Snap 15°</button>
-    <button id="bSnapT" aria-pressed="false">Snap 1 mm</button>
+    <button id="bSnapT" aria-pressed="false">Snap</button>
     <button id="bSnapV" aria-pressed="false" title="Snap vertex A onto vertex B (S)">Snap vertex</button>
   </div>
-  <button id="bSettings" class="spacer">Settings</button>
+  <button id="bFull" class="spacer" aria-pressed="false">Full screen</button>
+  <button id="bSettings">Settings</button>
 </header>
 <main>
   <aside>
@@ -116,13 +130,16 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       <select id="importPreset" aria-label="Unit preset">
         <option value="1" selected>mm</option><option value="10">cm</option><option value="25.4">inch</option><option value="1000">m</option><option value="">custom</option>
       </select>
+      <button id="bCollapse" title="Close every category">Collapse all</button>
+      <button id="bAddCat" title="Create your own category">+ Category</button>
+      <select id="catMove" aria-label="Move marked parts to a category" title="Move the marked parts (Ctrl/Shift+click) to a category"></select>
       <div id="importMsg" aria-live="polite"></div>
     </div>
     <input id="search" type="search" placeholder="Search parts..." autocomplete="off">
     <div id="list"></div>
   </aside>
   <div id="stage">
-    <div id="view"><div id="msg"></div></div>
+    <div id="view"><div id="msg"></div><div id="vps"></div><div id="fsBar"><button id="bFsExit">Exit full screen</button></div></div>
     <div id="addRow"><button id="bAdd" disabled>Add to assembly</button><span id="status" class="muted" aria-live="polite"></span></div>
     <div id="info"><span class="muted">Select a part</span></div>
   </div>
@@ -165,6 +182,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 <script>
 (function(){
   var $ = function(id){ return document.getElementById(id); };
+  var SNAP_DIST = 4, SNAP_NEAR = 50, SNAP_ROT = 5; // "Snap" button: align within SNAP_DIST mm to neighbours within SNAP_NEAR mm; rotation snaps to 90 deg steps within SNAP_ROT deg
   var view = $('view'), msg = $('msg');
   function fail(t){ msg.textContent = t; msg.style.display = 'flex'; }
 
@@ -193,7 +211,44 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   transformControls.setSpace('local'); // r128 always draws translate/rotate handles in local axes (TransformControls.js:961); 'world' would drag off-axis on rotated parts
   transformControls.detach(); // hidden until setSelection attaches it
   scene.add(transformControls);
-  transformControls.addEventListener('dragging-changed', function(e){ controls.enabled = !e.value; });
+
+  // viewports. V0 = the single view (canvas, the objects above). Four view = V4: top, perspective, front, left as overlay DIVs, each with its own
+  // orbit/pan-zoom control and gizmo; ONE canvas renders all four with viewport+scissor. act = the viewport the last pointer event belongs to.
+  var V0 = {name: 'single', cam: camera, el: renderer.domElement, orbit: controls, tc: transformControls, grid: true};
+  var V4 = [], allTC = [transformControls], fourView = false, maxVp = null, act = V0, ORTHO_D = 2000;
+  [['top', 'Top', [0, 0, 1], [0, 1, 0]], ['persp', 'Perspective'], ['front', 'Front', [0, -1, 0], [0, 0, 1]], ['left', 'Left', [-1, 0, 0], [0, 0, 1]]].forEach(function(d){
+    var ortho = !!d[2], el = document.createElement('div'), lab = document.createElement('span'), mx = document.createElement('button');
+    el.className = 'vp'; lab.className = 'vpl'; lab.textContent = d[1]; lab.title = 'Double-click: maximize / restore'; mx.className = 'vpmax'; mx.textContent = 'Max'; mx.title = 'Maximize / restore this view';
+    el.appendChild(lab); el.appendChild(mx); $('vps').appendChild(el);
+    var cam = ortho ? new THREE.OrthographicCamera(-1, 1, 1, -1, 1, ORTHO_D * 3) : camera;
+    if (ortho) cam.up.set(d[3][0], d[3][1], d[3][2]); // must precede OrbitControls
+    var o = new THREE.OrbitControls(cam, el);
+    o.enableDamping = true; o.dampingFactor = 0.1; o.enabled = false;
+    if (ortho) { o.enableRotate = false; o.mouseButtons = {LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: -1}; } // zoom (wheel) + pan (middle), never rotate
+    else o.mouseButtons = {LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: -1};
+    var t = new THREE.TransformControls(cam, el);
+    t.setSize(1.2); t.setSpace('local'); t.detach(); scene.add(t); allTC.push(t);
+    var v = {name: d[0], cam: cam, el: el, orbit: o, tc: t, ortho: ortho, dir: ortho ? new THREE.Vector3(d[2][0], d[2][1], d[2][2]) : null, span: [100, 100], grid: d[0] === 'top' || d[0] === 'persp'};
+    mx.onclick = function(){ maxVp = maxVp === v.name ? null : v.name; applyMax(); };
+    lab.ondblclick = mx.onclick;
+    V4.push(v);
+  });
+  function vpsActive(){ return fourView ? V4 : [V0]; }
+  function tcActive(){ return vpsActive().map(function(v){ return v.tc; }); }
+  function tcBusy(){ return tcActive().some(function(t){ return t.dragging || t.axis; }); }
+  function setTCEnabled(on){ allTC.forEach(function(t){ t.enabled = on; }); }
+  function setOrbitEnabled(on){ vpsActive().forEach(function(v){ v.orbit.enabled = on; }); }
+  allTC.forEach(function(t){ t.addEventListener('dragging-changed', function(e){ setOrbitEnabled(!e.value); }); });
+  function applyMax(){
+    V4.forEach(function(v){ v.el.classList.toggle('max', v.name === maxVp); });
+    $('vps').classList.toggle('hasmax', !!maxVp);
+  }
+  // the viewport under an event target (null = not a 3D surface: buttons, labels, panels)
+  function vpAt(t){
+    if (!fourView) return t === V0.el ? V0 : null;
+    for (var i = 0; i < V4.length; i++) if (V4[i].el === t) return V4[i];
+    return null;
+  }
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 0.7));
   var d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1, -1.5, 2); scene.add(d1);
@@ -295,6 +350,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     camera.near = Math.max(dist / 200, 0.05); camera.far = dist * 50;
     camera.updateProjectionMatrix();
     controls.update();
+    if (fourView) syncFour();
   }
 
   function showPreview(){
@@ -356,7 +412,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   // instances: matrix is the source of truth, applied by decompose (matrixAutoUpdate stays true)
   function applyMatrix(inst){ inst.matrix.decompose(inst.obj.position, inst.obj.quaternion, tmpScale); }
   function syncMatrixFromObj(inst){ inst.obj.updateMatrix(); inst.matrix.copy(inst.obj.matrix); }
-  function beforeRebuild(){ transformControls.detach(); } // never point at a group about to be disposed
+  function beforeRebuild(){ allTC.forEach(function(t){ t.detach(); }); } // never point at a group about to be disposed
   function afterRebuild(){}  // gizmo re-attaches by selUid in setSelection(), called at the end of rebuildInstances()
 
   // gizmo commit: one undo step per drag that actually changed the transform
@@ -377,20 +433,72 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     var D = pivot.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(-grp.p0.x, -grp.p0.y, -grp.p0.z));
     grp.recs.forEach(function(r){ r.i.matrix.fromArray(r.m).premultiply(D); applyMatrix(r.i); });
   }
-  transformControls.addEventListener('mouseDown', function(){
-    if (transformControls.object === pivot) {
+  // "Snap" (bbSnap): bounding-box snap while dragging. Translate: per world axis the nearest alignment of the dragged set's AABB {min, centre, max}
+  // with any other instance's AABB (within SNAP_DIST, only neighbours within SNAP_NEAR) shifts the set. Rotate: the gizmo rotation snaps to the nearest of
+  // the 24 axis-aligned orientations when within SNAP_ROT (not when Snap 15 deg is on); after a rotate drag the translate snap runs once so parts sit flush.
+  var bbSnap = false, bbHi = new THREE.Group(); // bbHi: outlines of the neighbours currently snapped to (not in `built`: never picked/exported/framed)
+  scene.add(bbHi);
+  var CUBE_Q = (function(){
+    var qs = [new THREE.Quaternion()], X = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2), Y = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+    for (var i = 0; i < qs.length; i++) [X, Y].forEach(function(r){
+      var q = qs[i].clone().multiply(r);
+      if (!qs.some(function(p){ return Math.abs(p.dot(q)) > 0.9999; })) qs.push(q);
+    });
+    return qs; // 24 rotations of the cube
+  })();
+  function clearBbHi(){ while (bbHi.children.length) { var h = bbHi.children.pop(); h.geometry.dispose(); h.material.dispose(); } }
+  function snapRotation(o){
+    var best = null, lim = THREE.MathUtils.degToRad(SNAP_ROT);
+    CUBE_Q.forEach(function(c){ var a = 2 * Math.acos(Math.min(1, Math.abs(o.quaternion.dot(c)))); if (a <= lim) { lim = a; best = c; } });
+    if (best) o.quaternion.copy(best);
+  }
+  function snapMoved(){ return grp ? grp.recs.map(function(r){ return r.i; }) : [selInst()].filter(Boolean); }
+  function bbSnapMove(set, show){
+    var db = new THREE.Box3(), best = [Infinity, Infinity, Infinity], hit = [null, null, null], ax = ['x', 'y', 'z'];
+    set.forEach(function(i){ i.obj.updateMatrixWorld(true); db.union(new THREE.Box3().setFromObject(i.obj)); });
+    if (db.isEmpty()) return;
+    var near = db.clone().expandByScalar(SNAP_NEAR);
+    instances.forEach(function(o){
+      if (!o.obj || set.indexOf(o) >= 0) return;
+      var ob = new THREE.Box3().setFromObject(o.obj);
+      if (!near.intersectsBox(ob)) return;
+      ax.forEach(function(a, k){
+        [db.min[a], (db.min[a] + db.max[a]) / 2, db.max[a]].forEach(function(x){
+          [ob.min[a], (ob.min[a] + ob.max[a]) / 2, ob.max[a]].forEach(function(y){
+            var d = y - x;
+            if (Math.abs(d) <= SNAP_DIST && Math.abs(d) < Math.abs(best[k])) { best[k] = d; hit[k] = ob; }
+          });
+        });
+      });
+    });
+    var d = new THREE.Vector3(isFinite(best[0]) ? best[0] : 0, isFinite(best[1]) ? best[1] : 0, isFinite(best[2]) ? best[2] : 0);
+    set.forEach(function(i){ i.obj.position.add(d); syncMatrixFromObj(i); });
+    clearBbHi();
+    if (show) hit.forEach(function(b, k){
+      if (!b || hit.indexOf(b) < k) return;
+      var h = new THREE.Box3Helper(b, 0xff8800); h.material.depthTest = false; h.renderOrder = 998; bbHi.add(h);
+    });
+  }
+  function onTC(type, fn){ allTC.forEach(function(t){ t.addEventListener(type, fn); }); }
+  onTC('mouseDown', function(e){
+    if (e.target.object === pivot) {
       grp = {p0: pivot.position.clone(), recs: marks.map(function(u){ var i = instances[findInst(u)]; return {i: i, m: i.matrix.elements.slice()}; })};
       return;
     }
     var i = selInst(); dragStart = i ? i.matrix.elements.slice() : null;
   });
-  transformControls.addEventListener('objectChange', function(){
-    if (grp) { groupApply(); return; }
-    var i = selInst(); if (i) syncMatrixFromObj(i);
+  onTC('objectChange', function(e){
+    var rot = e.target.mode === 'rotate', o = grp ? pivot : (selInst() || {}).obj;
+    if (!o) return;
+    if (bbSnap && rot && !e.target.rotationSnap) snapRotation(o);
+    if (grp) groupApply(); else syncMatrixFromObj(selInst());
+    if (bbSnap && !rot) bbSnapMove(snapMoved(), true);
   });
-  transformControls.addEventListener('mouseUp', function(){
-    if (grp) { // ONE undo step for the whole group drag
-      groupApply();
+  onTC('mouseUp', function(e){
+    clearBbHi();
+    var rot = e.target.mode === 'rotate';
+    if (grp) { // ONE undo step for the whole group drag (matrices are already current: objectChange ran on the last move)
+      if (bbSnap && rot) bbSnapMove(snapMoved(), false);
       var g = grp; grp = null;
       var changed = g.recs.some(function(r){ for (var j = 0; j < 16; j++) if (Math.abs(r.i.matrix.elements[j] - r.m[j]) > 1e-9) return true; return false; });
       placePivot(); // re-centre, rotation back to identity
@@ -400,33 +508,35 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     var i = selInst(), s = dragStart; dragStart = null;
     if (!i || !s) return;
     syncMatrixFromObj(i);
+    if (bbSnap && rot) bbSnapMove([i], false);
     // tolerance: decompose/compose round trip after undo can differ by an ulp
     for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { commit(); return; }
   });
   function setGizmoMode(m){
-    transformControls.setMode(m);
+    allTC.forEach(function(t){ t.setMode(m); });
     $('bMove').setAttribute('aria-pressed', m === 'translate');
     $('bRotG').setAttribute('aria-pressed', m === 'rotate');
   }
   // client px of a point on a handle; mirrors TransformControls.js updateMatrixWorld (world-quaternion axes, flip toward eye, scale)
-  function gizmoHandle(axis){
-    var o = transformControls.object, A = {X: 0, Y: 1, Z: 2}[axis];
+  function gizmoHandle(axis, v){
+    v = v || vpsActive()[0];
+    var tc = v.tc, camera = v.cam, o = tc.object, A = {X: 0, Y: 1, Z: 2}[axis];
     if (!o || A === undefined) return null;
     camera.updateMatrixWorld(); o.updateMatrixWorld();
     var pos = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
     o.matrixWorld.decompose(pos, q, s);
     var cam = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld), eye = cam.clone().sub(pos).normalize();
-    var R = pos.distanceTo(cam) * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7) * transformControls.size / 7;
+    var R = (camera.isOrthographicCamera ? (camera.top - camera.bottom) / camera.zoom : pos.distanceTo(cam) * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7)) * tc.size / 7;
     var ax = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)].map(function(v){ v.applyQuaternion(q); if (v.dot(eye) < 0) v.negate(); return v; });
     var p;
-    if (transformControls.mode === 'translate') {
+    if (tc.mode === 'translate') {
       if (ax[A].dot(eye) > 0.99) return null; // axis points at the camera: handle hidden
       p = ax[A].multiplyScalar(0.55 * R); // picker cylinder spans 0.1..1.1
     } else {
       p = ax[(A + 1) % 3].add(ax[(A + 2) % 3]).multiplyScalar(R * Math.SQRT1_2); // ring radius 1, 45 deg, camera-facing side (outside XYZE sphere r 0.7)
     }
     p.add(pos).project(camera);
-    var r = canvas.getBoundingClientRect();
+    var r = v.el.getBoundingClientRect();
     return [r.left + (p.x + 1) / 2 * r.width, r.top + (1 - p.y) / 2 * r.height];
   }
 
@@ -571,12 +681,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (mode === 'assembly' && snapSt === 'off') {
       if (marks.length === 1) { var s = selInst(); t = s && s.obj; }
       else if (marks.length > 1 && marks.every(function(u){ return instances[findInst(u)].obj; })) {
-        if (!transformControls.dragging) placePivot();
+        if (!tcActive().some(function(c){ return c.dragging; })) placePivot();
         t = pivot;
       }
     }
-    if (t) { if (transformControls.object !== t) transformControls.attach(t); }
-    else if (transformControls.object) transformControls.detach();
+    var on4 = tcActive(); // only the active viewports' gizmos attach (all to the same target)
+    allTC.forEach(function(c){
+      if (t && on4.indexOf(c) >= 0) { if (c.object !== t) c.attach(t); }
+      else if (c.object) c.detach();
+    });
   }
   function setSelection(uid){ var ok = uid !== null && uid !== undefined; setMarks(ok ? [uid] : [], ok ? 'i:' + uid : null); }
   function refreshSel(){ setMarks(marks); }
@@ -585,16 +698,16 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), canvas = renderer.domElement, down = null;
   // shared raycast for click-select and vertex snap; null = canvas has no size
   function rayHits(x, y, objs){
-    var r = canvas.getBoundingClientRect();
+    var r = act.el.getBoundingClientRect(); // act = the viewport that was clicked
     if (!r.width || !r.height) return null;
     ndc.set((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1);
-    raycaster.setFromCamera(ndc, camera);
+    raycaster.setFromCamera(ndc, act.cam);
     return raycaster.intersectObjects(objs, true);
   }
   function uidOf(o){ for (; o; o = o.parent) if (o.userData.uid !== undefined) return o.userData.uid; return null; }
   function pickAt(x, y, add){ // add (Ctrl+click) toggles the hit part in the marked set; a miss then changes nothing
     if (mode !== 'assembly') return null;
-    if (typeof transformControls !== 'undefined' && transformControls && (transformControls.dragging || transformControls.axis)) return null;
+    if (tcBusy()) return null;
     var hits = rayHits(x, y, built);
     if (!hits) return null;
     var uid = hits.length ? uidOf(hits[0].object) : null;
@@ -602,9 +715,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     else if (uid !== null) setMarks(marks.indexOf(uid) >= 0 ? marks.filter(function(u){ return u !== uid; }) : marks.concat(uid), 'i:' + uid);
     return selUid;
   }
-  canvas.addEventListener('pointerdown', function(e){ down = {x: e.clientX, y: e.clientY, b: e.button}; });
-  canvas.addEventListener('pointerup', function(e){
+  view.addEventListener('pointerdown', function(e){ var v = vpAt(e.target); if (!v) return; act = v; down = {x: e.clientX, y: e.clientY, b: e.button}; });
+  view.addEventListener('pointerup', function(e){
     var d = down; down = null;
+    if (!vpAt(e.target)) return;
     if (!d || d.b !== 0 || e.button !== 0) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 4) return; // orbit drag, not a click
     if (snapSt !== 'off') snapClick(e.clientX, e.clientY); // snap mode: clicks only pick vertices
@@ -616,9 +730,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var rband = document.createElement('div'); rband.id = 'rband'; rband.hidden = true; view.appendChild(rband);
   var rb = null;
   view.addEventListener('pointerdown', function(e){
-    if (rb || e.button !== 0 || !(e.ctrlKey || e.metaKey) || mode !== 'assembly' || snapSt !== 'off' || e.target !== canvas) return;
+    if (rb || e.button !== 0 || !(e.ctrlKey || e.metaKey) || mode !== 'assembly' || snapSt !== 'off' || !vpAt(e.target)) return;
+    act = vpAt(e.target);
     rb = {x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false};
-    controls.enabled = false; transformControls.enabled = false;
+    setOrbitEnabled(false); setTCEnabled(false);
     document.addEventListener('pointermove', rbMove); document.addEventListener('pointerup', rbUp);
     document.addEventListener('pointercancel', rbCancel); window.addEventListener('blur', rbCancel);
   }, true);
@@ -640,18 +755,18 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     document.removeEventListener('pointermove', rbMove); document.removeEventListener('pointerup', rbUp);
     document.removeEventListener('pointercancel', rbCancel); window.removeEventListener('blur', rbCancel);
     rband.hidden = true;
-    controls.enabled = true; transformControls.enabled = snapSt === 'off';
+    setOrbitEnabled(true); setTCEnabled(snapSt === 'off');
     if (apply && r.moved) boxSelect(r);
   }
   function boxSelect(r){
     var x0 = Math.min(r.x0, r.x1), x1 = Math.max(r.x0, r.x1), y0 = Math.min(r.y0, r.y1), y1 = Math.max(r.y0, r.y1);
-    var cr = canvas.getBoundingClientRect(), v = new THREE.Vector3(), hit = [];
-    camera.updateMatrixWorld();
+    var cr = act.el.getBoundingClientRect(), v = new THREE.Vector3(), hit = [];
+    act.cam.updateMatrixWorld();
     instances.forEach(function(i){
       if (!i.obj || marks.indexOf(i.uid) >= 0) return;
       var b = new THREE.Box3().setFromObject(i.obj), lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
       for (var k = 0; k < 8; k++) {
-        v.set(k & 1 ? b.max.x : b.min.x, k & 2 ? b.max.y : b.min.y, k & 4 ? b.max.z : b.min.z).project(camera);
+        v.set(k & 1 ? b.max.x : b.min.x, k & 2 ? b.max.y : b.min.y, k & 4 ? b.max.z : b.min.z).project(act.cam);
         if (v.z > 1) continue; // behind the camera: no valid screen position
         var px = cr.left + (v.x + 1) / 2 * cr.width, py = cr.top + (1 - v.y) / 2 * cr.height;
         lo = [Math.min(lo[0], px), Math.min(lo[1], py)]; hi = [Math.max(hi[0], px), Math.max(hi[1], py)];
@@ -662,8 +777,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     setStatus('Box select: ' + hit.length + ' added, ' + marks.length + ' marked');
   }
   // middle button pans: stop the browser's middle-click autoscroll (it starts from the compatibility mousedown / auxclick)
-  canvas.addEventListener('mousedown', function(e){ if (e.button === 1) e.preventDefault(); });
-  canvas.addEventListener('auxclick', function(e){ if (e.button === 1) e.preventDefault(); });
+  view.addEventListener('mousedown', function(e){ if (e.button === 1 && vpAt(e.target)) e.preventDefault(); });
+  view.addEventListener('auxclick', function(e){ if (e.button === 1 && vpAt(e.target)) e.preventDefault(); });
 
   // two-click vertex snap: translate instance A so its picked vertex lands on the picked vertex of B
   function setStatus(t){ $('status').textContent = t || ''; }
@@ -696,21 +811,21 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   function snapStart(){
     if (snapSt !== 'off') return;
     if (mode !== 'assembly') { setStatus('Snap: switch to Assembly mode first'); return; }
-    if (transformControls.dragging) return; // disabling mid-drag would swallow the gizmo's pointerup
+    if (tcActive().some(function(t){ return t.dragging; })) return; // disabling mid-drag would swallow the gizmo's pointerup
     if (instances.length < 2) { setStatus('Snap: need at least 2 parts'); return; }
     if (marks.length > 1 && instances.length <= marks.length) { setStatus('Snap: need an unmarked part as the target'); return; }
     snapSt = 'pickA'; snapA = snapB = null; clearMarkers();
-    transformControls.enabled = false;
+    setTCEnabled(false);
     refreshSel(); // gate in setMarks detaches the gizmo
-    canvas.style.cursor = 'crosshair';
+    view.style.cursor = 'crosshair';
     $('bSnapV').setAttribute('aria-pressed', true);
     setStatus(snapAMsg());
   }
   function snapExit(){
     if (snapSt === 'off') return;
     snapSt = 'off'; snapA = snapB = null; clearMarkers();
-    transformControls.enabled = true;
-    canvas.style.cursor = '';
+    setTCEnabled(true);
+    view.style.cursor = '';
     $('bSnapV').setAttribute('aria-pressed', false);
     setStatus('');
     refreshSel(); // re-attach the gizmo
@@ -745,12 +860,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (marks.length < 2) { marks = [A.uid]; anchorKey = 'i:' + A.uid; } // keep A selected (a multi-selection stays as it is); snapExit re-attaches the gizmo
     snapExit();
   }
-  function screenPos(uid){
+  function screenPos(uid, vp){
+    vp = vp || V0;
     var k = findInst(uid);
     if (k < 0 || !instances[k].obj) return null;
-    camera.updateMatrixWorld();
-    var v = new THREE.Box3().setFromObject(instances[k].obj).getCenter(new THREE.Vector3()).project(camera);
-    var r = canvas.getBoundingClientRect();
+    vp.cam.updateMatrixWorld();
+    var v = new THREE.Box3().setFromObject(instances[k].obj).getCenter(new THREE.Vector3()).project(vp.cam);
+    var r = vp.el.getBoundingClientRect();
     return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
   }
 
@@ -803,6 +919,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     camera.near = Math.max(dist / 200, 0.05); camera.far = dist * 50;
     camera.updateProjectionMatrix();
     controls.update();
+    if (fourView) syncFour();
   }
 
   function setMode(m){
@@ -922,18 +1039,70 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var CATS = ['Beams','Angular beams','Axles','Pegs & bushes','Gears','Wheels','Motors','Sensors','Brick','Misc'];
   PARTS.forEach(function(p){ if (CATS.indexOf(p.category) < 0) CATS.push(p.category); });
   var list = $('list'), items = []; // items: {p, el (row that is shown/hidden), det}
-  // idempotent: rebuilds #list + items, keeps search filter, each category's open state and the selection highlight
+  // user categories: catCustom = names of the user's own categories (listed even when empty); catOver = partId -> category override
+  // (the part's own p.category is never touched, so "original" is always known); both persist in localStorage
+  var CATS_STORE = 'eve3.cats', catCustom = [], catOver = Object.create(null), catOpen = {};
+  function catOf(p){ return catOver[p.id] || p.category; }
+  function allCats(){
+    var c = CATS.slice();
+    userParts.forEach(function(p){ if (c.indexOf(p.category) < 0) c.push(p.category); }); // 'Imported', or a category from a loaded JSON
+    catCustom.forEach(function(n){ if (c.indexOf(n) < 0) c.push(n); });
+    return c;
+  }
+  function saveCats(){
+    Object.keys(catOver).forEach(function(id){ if (!lookupPart(id) && !hasOwn(removedParts, id)) delete catOver[id]; }); // unknown ids (removed for good) are dropped
+    try { localStorage.setItem(CATS_STORE, JSON.stringify({custom: catCustom, over: catOver})); } catch (e) { /* session-only */ }
+  }
+  function loadCats(){
+    try {
+      var raw = localStorage.getItem(CATS_STORE), base = CATS.slice();
+      userParts.forEach(function(p){ if (base.indexOf(p.category) < 0) base.push(p.category); });
+      var m = EVEIO.mergeCategories(raw ? JSON.parse(raw) : null, base);
+      catCustom = m.custom; catOver = m.over;
+    } catch (e) { catCustom = []; catOver = Object.create(null); }
+  }
+  function catBtn(txt, title, fn){
+    var b = document.createElement('button'); b.className = 'xbtn'; b.textContent = txt; b.title = title; b.setAttribute('aria-label', title);
+    b.onclick = function(e){ e.preventDefault(); e.stopPropagation(); fn(); }; // inside <summary>: must not toggle the category
+    return b;
+  }
+  function catError(t){ $('importMsg').textContent = ''; importNote(t, true); }
+  function addCat(){
+    var r = prompt('Name of the new category'); if (r === null) return;
+    var v = EVEIO.checkCategoryName(r, allCats());
+    if (v.error) { catError(v.error); return; }
+    catCustom.push(v.name); catOpen[v.name] = true; saveCats(); buildSidebar();
+  }
+  function renameCat(c){
+    var r = prompt('Rename category', c); if (r === null) return;
+    var v = EVEIO.checkCategoryName(r, allCats(), c);
+    if (v.error) { catError(v.error); return; }
+    if (v.name === c) return;
+    catCustom[catCustom.indexOf(c)] = v.name;
+    Object.keys(catOver).forEach(function(id){ if (catOver[id] === c) catOver[id] = v.name; });
+    catOpen[v.name] = catOpen[c]; delete catOpen[c];
+    saveCats(); buildSidebar();
+  }
+  function deleteCat(c){
+    var ids = Object.keys(catOver).filter(function(id){ return catOver[id] === c; });
+    if (!confirm('Delete category "' + c + '"?' + (ids.length ? ' Its ' + ids.length + ' part(s) go back to their original category.' : ''))) return;
+    ids.forEach(function(id){ delete catOver[id]; });
+    catCustom.splice(catCustom.indexOf(c), 1); delete catOpen[c];
+    saveCats(); buildSidebar();
+  }
+  // idempotent: rebuilds #list + items, keeps search filter, each category's open state (also across rebuilds) and the selection highlight
   function buildSidebar(){
-    var open = {};
-    Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ open[d.dataset.cat] = d.open; });
+    Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ catOpen[d.dataset.cat] = d.open; });
     list.textContent = ''; items = [];
-    var L = library(), cats = CATS.slice();
-    userParts.forEach(function(p){ if (cats.indexOf(p.category) < 0) cats.push(p.category); }); // 'Imported', or a category from a loaded JSON
+    var L = library(), cats = allCats();
+    L.forEach(function(p){ if (cats.indexOf(catOf(p)) < 0) cats.push(catOf(p)); }); // an override to a category that no longer exists must not hide the part
     cats.forEach(function(c){
-      var ps = L.filter(function(p){ return p.category === c; });
-      if (!ps.length) return;
-      var det = document.createElement('details'); det.dataset.cat = c; det.open = open[c] !== false;
-      var sum = document.createElement('summary'); sum.textContent = c; det.appendChild(sum);
+      var ps = L.filter(function(p){ return catOf(p) === c; }), mine = catCustom.indexOf(c) >= 0;
+      if (!ps.length && !mine) return;
+      var det = document.createElement('details'); det.dataset.cat = c; det.open = catOpen[c] !== false;
+      var sum = document.createElement('summary'); sum.appendChild(document.createTextNode(c));
+      if (mine) { sum.appendChild(catBtn('✎', 'Rename category', function(){ renameCat(c); })); sum.appendChild(catBtn('×', 'Delete category', function(){ deleteCat(c); })); }
+      det.appendChild(sum);
       ps.forEach(function(p){
         var b = document.createElement('button'); b.className = 'item'; b.textContent = p.name; b.dataset.id = p.id;
         b.onclick = function(e){ partClick(e, p); };
@@ -949,15 +1118,37 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       });
       list.appendChild(det);
     });
+    var mv = $('catMove'); mv.textContent = '';
+    function opt(v, t, orig){ var o = document.createElement('option'); o.value = v; o.textContent = t; if (orig) o.dataset.orig = '1'; mv.appendChild(o); }
+    opt('', 'Move marked to...');
+    cats.forEach(function(c){ opt(c, c); });
+    opt('', '(original category)', true);
+    mv.value = '';
     applyFilter();
     markSel();
     persistParts(); // every library change passes through here (import, remove, undo/redo, Load JSON)
   }
+  $('catMove').onchange = function(){
+    var o = this.options[this.selectedIndex], orig = !!(o && o.dataset.orig), v = this.value;
+    this.value = '';
+    if (!o || (!orig && !v)) return;
+    var n = 0;
+    pmarks.forEach(function(id){
+      var p = lookupPart(id); if (!p) return;
+      if (orig || v === p.category) delete catOver[id]; else catOver[id] = v;
+      n++;
+    });
+    if (!orig) catOpen[v] = true;
+    saveCats(); buildSidebar();
+    setStatus('Moved ' + n + ' part' + (n === 1 ? '' : 's') + (orig ? ' back to the original category' : ' to "' + v + '"'));
+  };
+  $('bAddCat').onclick = addCat;
+  $('bCollapse').onclick = function(){ Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ d.open = false; catOpen[d.dataset.cat] = false; }); };
   // rows that pass the search filter; openOnly also drops rows inside a collapsed category
   function visible(openOnly){ return items.filter(function(i){ return i.el.style.display !== 'none' && (!openOnly || i.det.open); }).map(function(i){ return i.p; }); }
   function applyFilter(){
     var q = $('search').value.trim().toLowerCase();
-    items.forEach(function(i){ i.el.style.display = (!q || (i.p.name + ' ' + i.p.id + ' ' + i.p.category).toLowerCase().indexOf(q) >= 0) ? '' : 'none'; });
+    items.forEach(function(i){ i.el.style.display = (!q || (i.p.name + ' ' + i.p.id + ' ' + catOf(i.p)).toLowerCase().indexOf(q) >= 0) ? '' : 'none'; });
     Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){
       d.style.display = items.some(function(i){ return i.det === d && i.el.style.display !== 'none'; }) ? '' : 'none';
     });
@@ -1058,12 +1249,14 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (mode === 'assembly') setSelection(null);
       if (current) { pmarks = [current.id]; pAnchor = current.id; markSel(); }
     },
+    toggleMode: function(){ setMode(mode === 'preview' ? 'assembly' : 'preview'); },
+    fourView: clickBtn('bFour'), fullscreen: clickBtn('bFull'),
     snap15: clickBtn('bSnapR'), snap1mm: clickBtn('bSnapT'),
     frameAll: clickBtn('bFrameAll'), resetView: clickBtn('bReset'), wireframe: clickBtn('bWire'),
     grid: clickBtn('bGrid'), autoRotate: clickBtn('bRot'), addToAssembly: clickBtn('bAdd')
   };
-  var TITLES = {bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'],
-    bSnapR: ['snap15', 'Snap 15°'], bSnapT: ['snap1mm', 'Snap 1 mm'],
+  var TITLES = {bPrev: ['toggleMode', 'Preview mode'], bAsm: ['toggleMode', 'Assembly mode'], bFour: ['fourView', 'Four view'], bFull: ['fullscreen', 'Full screen'], bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'],
+    bSnapR: ['snap15', 'Snap 15°'], bSnapT: ['snap1mm', 'Snap to nearby bounding boxes'],
     bDel: ['deleteSel', 'Delete'], bUndo: ['undo', 'Undo'], bRedo: ['redo', 'Redo'], bFrameAll: ['frameAll', 'Frame all'],
     bReset: ['resetView', 'Reset view'], bWire: ['wireframe', 'Wireframe'], bGrid: ['grid', 'Grid + axes'],
     bRot: ['autoRotate', 'Auto-rotate'], bAdd: ['addToAssembly', 'Add to assembly']};
@@ -1135,6 +1328,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       else if (e.key === 'Backspace') { e.preventDefault(); snapRepick(); }
       return;
     }
+    if (act === 'deselect' && e.key === 'Escape' && (fsEl() || Date.now() - fsChangeAt < 400)) return; // that Esc leaves full screen, it must not clear the selection
     if (act && ACTIONS[act]) {
       e.preventDefault();
       ACTIONS[act]();
@@ -1166,7 +1360,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     wire = on;
     (group ? [group] : []).concat(built).forEach(function(g){ g.traverse(function(o){ if (o.isMesh) o.material.wireframe = on; }); });
   });
-  toggle('bRot', function(on){ controls.autoRotate = on; });
+  toggle('bRot', function(on){ controls.autoRotate = on; V4[1].orbit.autoRotate = on; }); // perspective views only
   toggle('bGrid', function(on){ helpers.visible = on; });
   $('bAdd').onclick = addInstance;
   $('bDel').onclick = deleteSelected;
@@ -1190,8 +1384,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   };
   $('bMove').onclick = function(){ setGizmoMode('translate'); };
   $('bRotG').onclick = function(){ setGizmoMode('rotate'); };
-  toggle('bSnapR', function(on){ transformControls.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null); });
-  toggle('bSnapT', function(on){ transformControls.setTranslationSnap(on ? 1 : null); });
+  toggle('bSnapR', function(on){ allTC.forEach(function(t){ t.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null); }); });
+  toggle('bSnapT', function(on){ bbSnap = on; });
   $('bSnapV').onclick = function(){ if (snapSt === 'off') snapStart(); else snapExit(); };
 
   // debug handle for browser tests, only with ?debug in the URL; nothing in the viewer depends on it
@@ -1209,27 +1403,36 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     selected: function(){ return selUid; },
     marked: function(){ return marks.slice(); },
     partMarks: function(){ return pmarks.slice(); },
+    four: function(){ return {on: fourView, max: maxVp, vps: V4.map(function(v){ var r = v.el.getBoundingClientRect(); return {name: v.name, ortho: v.ortho, rect: [r.left, r.top, r.width, r.height], pos: v.cam.position.toArray(), up: v.cam.up.toArray(), zoom: v.cam.zoom, orbitEnabled: v.orbit.enabled, label: v.el.querySelector('.vpl').textContent}; })}; },
+    setFour: function(on){ setFour(!!on); },
+    project: function(name, p){ var v = V4.filter(function(x){ return x.name === name; })[0]; v.cam.updateMatrixWorld(); var q = new THREE.Vector3(p[0], p[1], p[2]).project(v.cam), r = v.el.getBoundingClientRect(); return [r.left + (q.x + 1) / 2 * r.width, r.top + (1 - q.y) / 2 * r.height]; },
+    vpScreenPos: function(uid, name){ return screenPos(uid, V4.filter(function(x){ return x.name === name; })[0]); },
+    vpHandle: function(axis, name){ return gizmoHandle(axis, V4.filter(function(x){ return x.name === name; })[0]); },
+    fsRefresh: function(){ onFs(); },
     view: function(){ return {target: controls.target.toArray(), pos: camera.position.toArray(), mouseButtons: JSON.parse(JSON.stringify(controls.mouseButtons)), controlsEnabled: controls.enabled, gizmoEnabled: transformControls.enabled}; },
     bindings: function(){ return JSON.parse(JSON.stringify(bindings)); },
     pickAt: function(clientX, clientY){ return pickAt(clientX, clientY); },
-    screenPos: function(uid){ return screenPos(uid); },
+    screenPos: function(uid, name){ return screenPos(uid, name ? V4.filter(function(x){ return x.name === name; })[0] : V0); },
     undo: function(){ undo(); },
     redo: function(){ redo(); },
     stack: function(){ return {len: undoStack.length, idx: undoIdx}; },
     gizmo: function(){
-      var t = transformControls;
+      var t = tcActive()[0];
       return {attachedUid: t.object && t.object !== pivot ? t.object.userData.uid : null, group: t.object === pivot, pivotPos: pivot.position.toArray(), mode: t.mode, size: t.size, dragging: t.dragging, axis: t.axis, snapRot: t.rotationSnap, snapTrans: t.translationSnap};
     },
     gizmoHandle: function(axis){ return gizmoHandle(axis); },
-    // drives the pivot through the same events a gizmo drag fires (for tests that cannot make an exact mouse rotation)
-    groupDrag: function(dx, dy, dz, rotZdeg){
-      if (transformControls.object !== pivot) return false;
-      transformControls.dispatchEvent({type: 'mouseDown'});
-      pivot.position.add(new THREE.Vector3(dx, dy, dz)); pivot.rotation.z += rotZdeg * Math.PI / 180; pivot.updateMatrixWorld();
-      transformControls.dispatchEvent({type: 'objectChange'});
-      transformControls.dispatchEvent({type: 'mouseUp'});
+    // drives the attached gizmo target (single part or group pivot) through the same events a gizmo drag fires (exact angles for tests)
+    gizmoDrag: function(dx, dy, dz, rotZdeg){
+      var t = tcActive()[0], o = t.object;
+      if (!o) return false;
+      t.dispatchEvent({type: 'mouseDown'});
+      o.position.add(new THREE.Vector3(dx, dy, dz)); o.rotation.z += rotZdeg * Math.PI / 180; o.updateMatrixWorld();
+      t.dispatchEvent({type: 'objectChange'});
+      t.dispatchEvent({type: 'mouseUp'});
       return true;
     },
+    bbox: function(uid){ var k = findInst(uid); if (k < 0 || !instances[k].obj) return null; var b = new THREE.Box3().setFromObject(instances[k].obj); return {min: b.min.toArray(), max: b.max.toArray()}; },
+    snapHelpers: function(){ return bbHi.children.length; },
     setGizmoMode: function(m){ if (m === 'translate' || m === 'rotate') setGizmoMode(m); },
     snapMode: function(on){ if (on) snapStart(); else snapExit(); return snapSt; },
     snapState: function(){
@@ -1244,6 +1447,86 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     loadJSON: function(text){ return loadAssemblyText(text, 'debug', true); }
   }; }
 
+  // ---- four view: framing, switching, rendering
+  function contentBox(){
+    var b = mode === 'assembly' ? assemblyBox() : (current ? partBox(current) : new THREE.Box3());
+    if (b.isEmpty()) b.set(new THREE.Vector3(-200, -200, -200), new THREE.Vector3(200, 200, 200));
+    return b;
+  }
+  // orthographic views look at the content centre from far along their axis; the frustum is fitted (and refitted to the viewport shape) at render time
+  function frameOrtho(){
+    var b = contentBox(), c = b.getCenter(new THREE.Vector3()), z = b.getSize(new THREE.Vector3());
+    V4.forEach(function(v){
+      if (!v.ortho) return;
+      v.span = v.name === 'top' ? [z.x, z.y] : v.name === 'front' ? [z.x, z.z] : [z.y, z.z]; // screen width, height of the content
+      v.cam.zoom = 1;
+      v.orbit.target.copy(c);
+      v.cam.position.copy(c).addScaledVector(v.dir, ORTHO_D);
+      v.orbit.update();
+    });
+  }
+  function syncFour(){ V4[1].orbit.target.copy(controls.target); V4[1].orbit.update(); frameOrtho(); } // Frame all / Reset view / mode change
+  function setFour(on){
+    if (on === fourView) return;
+    snapExit();
+    fourView = on;
+    document.body.classList.toggle('four', on);
+    $('bFour').setAttribute('aria-pressed', on);
+    if (on) V4[1].orbit.target.copy(controls.target);
+    else { controls.target.copy(V4[1].orbit.target); renderer.setScissorTest(false); }
+    controls.enabled = !on; V4.forEach(function(v){ v.orbit.enabled = on; });
+    act = on ? V4[1] : V0;
+    applyMax();
+    if (on) frameOrtho();
+    refreshSel(); // gizmos move to the active viewports
+    if (!on) { resize(); controls.update(); }
+  }
+  function renderFour(){
+    var cr = canvas.getBoundingClientRect(), grid = helpers.children[0];
+    renderer.setScissorTest(true);
+    V4.forEach(function(v){
+      var r = v.el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return; // hidden: another viewport is maximized
+      var x = r.left - cr.left, y = cr.bottom - r.bottom, asp = r.width / r.height;
+      renderer.setViewport(x, y, r.width, r.height); renderer.setScissor(x, y, r.width, r.height);
+      if (v.ortho) {
+        var hh = Math.max(v.span[1] / 2, v.span[0] / 2 / asp) * 1.15 + 2;
+        v.cam.left = -hh * asp; v.cam.right = hh * asp; v.cam.top = hh; v.cam.bottom = -hh;
+      } else v.cam.aspect = asp;
+      v.cam.updateProjectionMatrix();
+      v.orbit.update();
+      allTC.forEach(function(t){ if (t.object) t.visible = t === v.tc; }); // each viewport shows only its own gizmo (scaled for its camera)
+      if (grid) grid.visible = v.grid; // the ground grid is edge-on (a line) in Front/Left
+      renderer.render(scene, v.cam);
+    });
+    allTC.forEach(function(t){ if (t.object) t.visible = true; });
+    if (grid) grid.visible = true;
+  }
+
+  // ---- full screen: body.fs hides everything but the 3D view; the browser's fullscreenchange (also Esc / F11) is the single source of truth
+  var fsChangeAt = 0;
+  function fsEl(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  function toggleFs(){
+    try {
+      var el = document.documentElement, p;
+      if (fsEl()) p = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else p = (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      if (p && p.catch) p.catch(function(e){ setStatus('Full screen refused: ' + (e && e.message ? e.message : e)); });
+    } catch (e) { setStatus('Full screen is not available: ' + (e && e.message ? e.message : e)); }
+  }
+  function onFs(){
+    var on = !!fsEl();
+    fsChangeAt = Date.now();
+    document.body.classList.toggle('fs', on);
+    $('bFull').setAttribute('aria-pressed', on);
+    resize();
+  }
+  document.addEventListener('fullscreenchange', onFs);
+  document.addEventListener('webkitfullscreenchange', onFs);
+  $('bFull').onclick = toggleFs;
+  $('bFsExit').onclick = toggleFs;
+  $('bFour').onclick = function(){ setFour(!fourView); };
+
   function resize(){
     var w = view.clientWidth, h = view.clientHeight;
     if (!w || !h) return;
@@ -1256,7 +1539,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   resize();
 
   function start(){
-    (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+    (function loop(){ requestAnimationFrame(loop); if (fourView) renderFour(); else { controls.update(); renderer.render(scene, camera); } })();
     commit(); // initial snapshot (incl. restored imported parts) so the first add can be undone
     select(PARTS[0]);
   }
@@ -1271,7 +1554,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
           userParts.push(p); DB.has[p.id] = true; DB.seq = Math.max(DB.seq, (r.ord || 0) + 1); n++;
         } catch (e) { console.warn('EVE3: skipped a stored part:', e && e.message); }
       });
-      if (n) { buildSidebar(); setStatus('restored ' + n + ' imported part' + (n === 1 ? '' : 's')); }
+      loadCats(); buildSidebar(); // category preferences need the restored parts (their categories are valid override targets)
+      if (n) setStatus('restored ' + n + ' imported part' + (n === 1 ? '' : 's'));
     } catch (e) { console.warn('EVE3: restoring imported parts failed:', e && e.message); }
     start();
   });
