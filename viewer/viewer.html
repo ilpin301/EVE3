@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EV3 Part Viewer</title>
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#eceef2; --text:#1d2330; --muted:#5d6676;
+  --border:#d3d8e0; --accent:#2563eb; --accent-text:#ffffff; --canvas:#e9ecf1;
+  --warn-bg:#fff1cc; --warn-text:#6b4a00; --err:#b42318;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#14171c; --panel:#1c2027; --panel2:#262b34; --text:#e6e9ef; --muted:#9aa3b2;
+    --border:#333a46; --accent:#5b8def; --accent-text:#0b1020; --canvas:#10131a;
+    --warn-bg:#4a3a10; --warn-text:#ffd878; --err:#ff8a80;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column}
+header{padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}
+.toolbar{display:flex;gap:6px;flex-wrap:wrap}
+.seg{gap:0}
+.seg button:first-child{border-radius:6px 0 0 6px}
+.seg button:last-child{border-radius:0 6px 6px 0;border-left:0}
+button{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:default;border-color:var(--border)}
+button[aria-pressed="true"]{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+main{flex:1;min-height:0;display:flex}
+aside{width:280px;flex:none;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+aside#asm{width:240px;border-right:0;border-left:1px solid var(--border);padding:8px}
+#asm h2{font-size:15px;margin:0}
+#asmList{flex:1;overflow:auto;margin:6px 0}
+#search{margin:8px;padding:6px 8px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px}
+#list{flex:1;overflow:auto;padding:0 8px 8px}
+#importBox{padding:8px 8px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+#importBox input,#importBox select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 6px}
+#importScale{width:80px}
+#importMsg{width:100%;font-size:12px;color:var(--muted);max-height:8em;overflow:auto}
+#importMsg .err{color:var(--err)}
+.row{display:flex;align-items:center}
+.row .item{flex:1;min-width:0}
+.xbtn{border:0;background:transparent;padding:2px 8px;color:var(--muted)}
+.xbtn:hover{color:var(--err)}
+details{margin-bottom:4px}
+summary{cursor:pointer;font-weight:600;padding:4px 2px;color:var(--muted);user-select:none}
+.item{display:block;width:100%;text-align:left;border:0;background:transparent;padding:4px 8px;border-radius:4px}
+.item:hover{background:var(--panel2)}
+.item.sel{background:var(--accent);color:var(--accent-text)}
+#stage{flex:1;min-width:0;display:flex;flex-direction:column}
+#view{flex:1;min-height:0;position:relative;background:var(--canvas)}
+#view canvas{display:block;width:100%;height:100%}
+#msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--err);font-size:16px}
+#addRow{padding:6px 16px;background:var(--panel);border-top:1px solid var(--border);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+#info{padding:8px 16px;background:var(--panel);border-top:1px solid var(--border);display:flex;gap:16px;flex-wrap:wrap;align-items:baseline}
+#info b{font-size:15px}
+.muted{color:var(--muted)}
+.badge{background:var(--warn-bg);color:var(--warn-text);padding:1px 8px;border-radius:10px;font-size:12px}
+footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel);border-top:1px solid var(--border)}
+@media (max-width:700px){
+  main{flex-direction:column;overflow:auto}
+  aside{width:100%;max-height:35vh;border-right:0;border-bottom:1px solid var(--border)}
+  aside#asm{width:100%;border-left:0;border-top:1px solid var(--border)}
+  #view{min-height:55vh;flex:none}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>EV3 Part Viewer</h1>
+  <div class="toolbar seg" role="group" aria-label="Mode">
+    <button id="bPrev" aria-pressed="true">Preview</button>
+    <button id="bAsm" aria-pressed="false">Assembly</button>
+  </div>
+  <div class="toolbar">
+    <button id="bReset">Reset view</button>
+    <button id="bWire" aria-pressed="false">Wireframe</button>
+    <button id="bRot" aria-pressed="false">Auto-rotate</button>
+    <button id="bGrid" aria-pressed="true">Grid + axes</button>
+  </div>
+  <div class="toolbar">
+    <div class="toolbar seg" role="group" aria-label="Gizmo mode">
+      <button id="bMove" aria-pressed="true" title="Move (W)">Move</button>
+      <button id="bRotG" aria-pressed="false" title="Rotate (E)">Rotate</button>
+    </div>
+    <button id="bSnapR" aria-pressed="false">Snap 15°</button>
+    <button id="bSnapT" aria-pressed="false">Snap 1 mm</button>
+    <button id="bSnapV" aria-pressed="false" title="Snap vertex A onto vertex B (S)">Snap vertex</button>
+  </div>
+</header>
+<main>
+  <aside>
+    <div id="importBox">
+      <button id="bImport">Import parts…</button>
+      <input type="file" id="importFile" multiple accept=".stl,.obj,.mtl" hidden>
+      <label>scale <input id="importScale" type="number" value="1" min="0.000001" step="any"></label>
+      <select id="importPreset" aria-label="Unit preset">
+        <option value="1" selected>mm</option><option value="10">cm</option><option value="25.4">inch</option><option value="1000">m</option><option value="">custom</option>
+      </select>
+      <div id="importMsg" aria-live="polite"></div>
+    </div>
+    <input id="search" type="search" placeholder="Search parts..." autocomplete="off">
+    <div id="list"></div>
+  </aside>
+  <div id="stage">
+    <div id="view"><div id="msg"></div></div>
+    <div id="addRow"><button id="bAdd" disabled>Add to assembly</button><span id="status" class="muted" aria-live="polite"></span></div>
+    <div id="info"><span class="muted">Select a part</span></div>
+  </div>
+  <aside id="asm">
+    <h2>Assembly</h2>
+    <div id="asmCount" class="muted">0 instances</div>
+    <div id="asmList"></div>
+    <div class="toolbar">
+      <button id="bDel" disabled>Delete</button>
+      <button id="bFrameAll">Frame all</button>
+      <button id="bUndo" disabled>Undo</button>
+      <button id="bRedo" disabled>Redo</button>
+    </div>
+    <div class="toolbar">
+      <button id="bExpSTL" disabled>Export STL</button>
+      <button id="bExpOBJ" disabled>Export OBJ + MTL</button>
+    </div>
+    <div class="toolbar">
+      <button id="bSaveJSON" disabled>Save JSON</button>
+      <button id="bLoadJSON">Load JSON</button>
+      <input type="file" id="jsonFile" accept=".json,application/json" hidden>
+    </div>
+  </aside>
+</main>
+<footer>Geometry from the LDraw Parts Library (CC BY 4.0), original EV3 shapes by the LEGO MINDSTORMS Team. Not an official LEGO product.</footer>
+
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script src="TransformControls.js"></script>
+<script src="models.js"></script>
+<script src="io.js"></script>
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  var view = $('view'), msg = $('msg');
+  function fail(t){ msg.textContent = t; msg.style.display = 'flex'; }
+
+  if (typeof THREE === 'undefined' || !THREE.OrbitControls || !THREE.TransformControls || !window.EVEIO) { fail('three.min.js / OrbitControls.js / TransformControls.js / io.js failed to load.'); return; }
+  var PARTS = window.PARTS;
+  if (!Array.isArray(PARTS) || !PARTS.length) { fail('models.js is missing or empty (window.PARTS not defined).'); return; }
+
+  var renderer;
+  try { renderer = new THREE.WebGLRenderer({antialias:true, alpha:true}); }
+  catch (e) { fail('WebGL is not available in this browser.'); return; }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  view.appendChild(renderer.domElement);
+
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(40, 1, 0.1, 5000);
+  camera.up.set(0, 0, 1); // must precede OrbitControls
+  var controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+
+  // gizmo: size already scales with camera distance inside TransformControls (arm ~0.1*size*dist), so a constant works
+  var transformControls = new THREE.TransformControls(camera, renderer.domElement);
+  transformControls.setSize(1.2);
+  transformControls.setSpace('local'); // r128 always draws translate/rotate handles in local axes (TransformControls.js:961); 'world' would drag off-axis on rotated parts
+  transformControls.detach(); // hidden until setSelection attaches it
+  scene.add(transformControls);
+  transformControls.addEventListener('dragging-changed', function(e){ controls.enabled = !e.value; });
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 0.7));
+  var d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1, -1.5, 2); scene.add(d1);
+  var d2 = new THREE.DirectionalLight(0xffffff, 0.35); d2.position.set(-2, 1, -1); scene.add(d2);
+
+  var group = null, helpers = new THREE.Group(), wire = false, current = null;
+  scene.add(helpers);
+  var snapMarkers = new THREE.Group(); // vertex-snap markers: not in `built`, so never raycast or exported
+  scene.add(snapMarkers);
+  var snapSt = 'off', snapA = null, snapB = null, lastSnapRec = null; // vertex snap: off | pickA | pickB
+
+  // assembly state
+  var userParts = [];
+  var removedParts = {}; // session-only holding map id -> part definition (never deleted mid-session)
+  var mode = 'preview', instances = [], uidCounter = 0, selUid = null, built = [];
+  var tmpScale = new THREE.Vector3();
+  function library(){ return PARTS.concat(userParts); }
+  function lookupPart(id){ var L = library(); for (var i = 0; i < L.length; i++) if (L[i].id === id) return L[i]; return null; }
+  function findInst(uid){ for (var i = 0; i < instances.length; i++) if (instances[i].uid === uid) return i; return -1; }
+
+  function disposeObj(o){
+    o.traverse(function(m){ if (m.isMesh) { m.geometry.dispose(); m.material.dispose(); } });
+    scene.remove(o);
+  }
+  function disposeGroup(){ if (group) { disposeObj(group); group = null; } }
+
+  // one Mesh per colour, one material per mesh (materials are never shared between groups)
+  function makePartGroup(part, wire){
+    var g0 = new THREE.Group();
+    part.meshes.forEach(function(m){
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(m.v), 3));
+      g.setIndex(new THREE.BufferAttribute(new Uint32Array(m.f), 1));
+      g.computeVertexNormals();
+      g0.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+        color: new THREE.Color(m.color), flatShading: true, side: THREE.DoubleSide,
+        roughness: 0.55, metalness: 0.05, wireframe: wire })));
+    });
+    return g0;
+  }
+
+  // grid + axes on z=0; visibility follows the Grid toggle button
+  function setHelpers(size, divs, axes){
+    while (helpers.children.length) { var c = helpers.children.pop(); if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); }
+    var grid = new THREE.GridHelper(size, divs, 0x888888, 0xbbbbbb);
+    grid.rotation.x = Math.PI / 2;
+    helpers.add(grid, new THREE.AxesHelper(axes));
+    helpers.visible = $('bGrid').getAttribute('aria-pressed') === 'true';
+  }
+
+  function frame(){
+    var d = current.dims_mm, r = Math.max(d[0], d[1], d[2]);
+    var dist = r * 2.2 + 10;
+    // imported parts keep their file origin, so frame the real bbox; built-ins keep the dims-at-origin view
+    var c = current.user ? partBox(current).getCenter(new THREE.Vector3()) : new THREE.Vector3(0, 0, d[2] / 2);
+    controls.target.copy(c);
+    camera.position.set(c.x + dist * 0.7, c.y - dist * 0.8, c.z + dist * 0.55);
+    camera.near = Math.max(dist / 200, 0.05); camera.far = dist * 50;
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+
+  function showPreview(){
+    var p = current;
+    disposeGroup();
+    group = makePartGroup(p, wire);
+    scene.add(group);
+    var d = p.dims_mm, r = Math.max(d[0], d[1], d[2]), g = r;
+    if (p.user) { var b = partBox(p); g = Math.max(r, Math.abs(b.min.x), Math.abs(b.max.x), Math.abs(b.min.y), Math.abs(b.max.y)); } // grid at the origin must reach an off-origin part
+    var gs = Math.ceil(g * 2 / 8) * 8;
+    setHelpers(gs, Math.min(gs / 8, 500), r * 0.8); // cap: a far-off-origin import must not ask for 1e5 grid lines
+    frame();
+  }
+
+  function showInfo(p){
+    var el = $('info'); el.textContent = '';
+    function add(tag, text, cls){ var s = document.createElement(tag); s.textContent = text; if (cls) s.className = cls; el.appendChild(s); }
+    var tris = 0; p.meshes.forEach(function(m){ tris += m.f.length / 3; });
+    add('b', p.name);
+    add('span', p.category, 'muted');
+    add('span', p.dims_mm.map(function(n){ return +n.toFixed(1); }).join(' × ') + ' mm');
+    add('span', tris + ' triangles', 'muted');
+    if (p.approx) add('span', 'approximate shape', 'badge');
+    if (p.user) add('span', 'imported', 'badge');
+    document.title = 'EV3 Part Viewer - ' + p.name;
+    markSel();
+    var s = list.querySelector('.item.sel'); if (s) s.scrollIntoView({block:'nearest'});
+    $('bAdd').disabled = !current;
+  }
+  function markSel(){ Array.prototype.forEach.call(list.querySelectorAll('.item'), function(b){ b.classList.toggle('sel', !!current && b.dataset.id === current.id); }); }
+
+  function select(p){
+    current = p;
+    if (mode === 'preview') showPreview();
+    showInfo(p);
+  }
+
+  // instances: matrix is the source of truth, applied by decompose (matrixAutoUpdate stays true)
+  function applyMatrix(inst){ inst.matrix.decompose(inst.obj.position, inst.obj.quaternion, tmpScale); }
+  function syncMatrixFromObj(inst){ inst.obj.updateMatrix(); inst.matrix.copy(inst.obj.matrix); }
+  function beforeRebuild(){ transformControls.detach(); } // never point at a group about to be disposed
+  function afterRebuild(){}  // gizmo re-attaches by selUid in setSelection(), called at the end of rebuildInstances()
+
+  // gizmo commit: one undo step per drag that actually changed the transform
+  var dragStart = null;
+  function selInst(){ var k = findInst(selUid); return k >= 0 && instances[k].obj ? instances[k] : null; }
+  transformControls.addEventListener('mouseDown', function(){ var i = selInst(); dragStart = i ? i.matrix.elements.slice() : null; });
+  transformControls.addEventListener('objectChange', function(){ var i = selInst(); if (i) syncMatrixFromObj(i); });
+  transformControls.addEventListener('mouseUp', function(){
+    var i = selInst(), s = dragStart; dragStart = null;
+    if (!i || !s) return;
+    syncMatrixFromObj(i);
+    // tolerance: decompose/compose round trip after undo can differ by an ulp
+    for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { commit(); return; }
+  });
+  function setGizmoMode(m){
+    transformControls.setMode(m);
+    $('bMove').setAttribute('aria-pressed', m === 'translate');
+    $('bRotG').setAttribute('aria-pressed', m === 'rotate');
+  }
+  // client px of a point on a handle; mirrors TransformControls.js updateMatrixWorld (world-quaternion axes, flip toward eye, scale)
+  function gizmoHandle(axis){
+    var o = transformControls.object, A = {X: 0, Y: 1, Z: 2}[axis];
+    if (!o || A === undefined) return null;
+    camera.updateMatrixWorld(); o.updateMatrixWorld();
+    var pos = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    o.matrixWorld.decompose(pos, q, s);
+    var cam = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld), eye = cam.clone().sub(pos).normalize();
+    var R = pos.distanceTo(cam) * Math.min(1.9 * Math.tan(Math.PI * camera.fov / 360) / camera.zoom, 7) * transformControls.size / 7;
+    var ax = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)].map(function(v){ v.applyQuaternion(q); if (v.dot(eye) < 0) v.negate(); return v; });
+    var p;
+    if (transformControls.mode === 'translate') {
+      if (ax[A].dot(eye) > 0.99) return null; // axis points at the camera: handle hidden
+      p = ax[A].multiplyScalar(0.55 * R); // picker cylinder spans 0.1..1.1
+    } else {
+      p = ax[(A + 1) % 3].add(ax[(A + 2) % 3]).multiplyScalar(R * Math.SQRT1_2); // ring radius 1, 45 deg, camera-facing side (outside XYZE sphere r 0.7)
+    }
+    p.add(pos).project(camera);
+    var r = canvas.getBoundingClientRect();
+    return [r.left + (p.x + 1) / 2 * r.width, r.top + (1 - p.y) / 2 * r.height];
+  }
+
+  // the ONLY place instance groups are created/disposed
+  function rebuildInstances(){
+    beforeRebuild();
+    built.forEach(disposeObj); built = [];
+    instances.forEach(function(i){
+      i.obj = null;
+      var p = mode === 'assembly' && lookupPart(i.partId);
+      if (!p) return;
+      i.obj = makePartGroup(p, wire);
+      i.obj.userData.uid = i.uid; // pick hit -> instance
+      applyMatrix(i);
+      scene.add(i.obj); built.push(i.obj);
+    });
+    setSelection(selUid); // clears selUid if gone, refreshes list + highlight on the new groups
+    afterRebuild();
+  }
+
+  // bboxes from vertex data + instance matrix, so they work in Preview mode too (no groups there)
+  // cached per part object in a Map (not a part property: parts get serialized); callers get a clone they may mutate
+  var boxCache = new Map();
+  function partBox(p){
+    var b = boxCache.get(p);
+    if (!b) {
+      var v3 = new THREE.Vector3(); b = new THREE.Box3();
+      p.meshes.forEach(function(m){ for (var k = 0; k < m.v.length; k += 3) b.expandByPoint(v3.set(m.v[k], m.v[k + 1], m.v[k + 2])); });
+      boxCache.set(p, b);
+    }
+    return b.clone();
+  }
+  function instBox(i){ var p = lookupPart(i.partId); return p ? partBox(p).applyMatrix4(i.matrix) : new THREE.Box3(); }
+  function assemblyBox(){ var box = new THREE.Box3(); instances.forEach(function(i){ box.union(instBox(i)); }); return box; }
+
+  function addInstance(){
+    if (!current) return;
+    var m = new THREE.Matrix4(), box = assemblyBox();
+    if (!box.isEmpty()) {
+      var pb = partBox(current);
+      m.makeTranslation(box.max.x + 20 - (pb.isEmpty() ? 0 : pb.min.x), 0, 0);
+    }
+    var inst = {uid: ++uidCounter, partId: current.id, matrix: m, obj: null};
+    instances.push(inst);
+    setSelection(inst.uid);
+    rebuildInstances();
+    if (mode === 'assembly' && instances.length === 1) frameAll();
+    commit();
+  }
+
+  function deleteSelected(){
+    snapExit();
+    var i = findInst(selUid);
+    if (i < 0) return;
+    instances.splice(i, 1);
+    selUid = null;
+    rebuildInstances();
+    commit();
+  }
+
+  // undo/redo: snapshot stack, commit() after every user action
+  var undoStack = [], undoIdx = -1, restoring = false, UNDO_MAX = 100;
+  function snapshot(){
+    return {
+      instances: instances.map(function(i){ return {uid: i.uid, partId: i.partId, matrix16: i.matrix.elements.slice()}; }),
+      userPartIds: userParts.map(function(p){ return p.id; }),
+      uidCounter: uidCounter
+    };
+  }
+  function updateUndoButtons(){
+    $('bUndo').disabled = undoIdx <= 0;
+    $('bRedo').disabled = undoIdx >= undoStack.length - 1;
+    $('bExpSTL').disabled = $('bExpOBJ').disabled = mode !== 'assembly' || !instances.length;
+    $('bSaveJSON').disabled = !instances.length && !userParts.length; // works in both modes
+  }
+  function commit(){
+    if (restoring) return;
+    undoStack.length = undoIdx + 1; // drop redo tail
+    undoStack.push(snapshot());
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    undoIdx = undoStack.length - 1;
+    updateUndoButtons();
+  }
+  // after any userParts change: sidebar, assembly names, and a preview that no longer points at a displaced part
+  function onLibraryChanged(){
+    buildSidebar();
+    renderAsmList();
+    if (current && !lookupPart(current.id)) select(PARTS[0]);
+  }
+  // move parts between userParts and removedParts so userParts matches ids (in that order)
+  function restoreLibrary(ids){
+    userParts.forEach(function(p){ removedParts[p.id] = p; });
+    userParts = [];
+    ids.forEach(function(id){
+      var p = removedParts[id];
+      if (p) { userParts.push(p); delete removedParts[id]; }
+      else console.warn('undo: user part not found in holding map:', id);
+    });
+    onLibraryChanged();
+  }
+  function restore(s){
+    restoring = true;
+    try {
+      restoreLibrary(s.userPartIds || []);
+      instances = [];
+      (s.instances || []).forEach(function(r){
+        if (!lookupPart(r.partId)) { console.warn('undo: skipping instance with unknown part:', r.partId, '#' + r.uid); return; }
+        instances.push({uid: r.uid, partId: r.partId, matrix: new THREE.Matrix4().fromArray(r.matrix16), obj: null});
+      });
+      uidCounter = Math.max(uidCounter, s.uidCounter || 0); // uids never repeat
+      rebuildInstances(); // clears selUid if gone, refreshes the list; no groups in Preview mode
+    } finally { restoring = false; }
+  }
+  function undo(){ snapExit(); if (undoIdx <= 0) return; undoIdx--; restore(undoStack[undoIdx]); updateUndoButtons(); }
+  function redo(){ snapExit(); if (undoIdx >= undoStack.length - 1) return; undoIdx++; restore(undoStack[undoIdx]); updateUndoButtons(); }
+
+  // the ONE selection setter: list, 3D click, keys, undo/redo, add; unknown/null uid = deselect
+  function setSelection(uid){
+    selUid = (uid !== null && uid !== undefined && findInst(uid) >= 0) ? uid : null;
+    renderAsmList();
+    instances.forEach(function(i){
+      if (!i.obj) return;
+      var on = i.uid === selUid;
+      i.obj.traverse(function(o){ if (o.isMesh) { o.material.emissive.setHex(on ? 0x2563eb : 0); o.material.emissiveIntensity = on ? 0.55 : 0; } });
+    });
+    // the only attach/detach decision; no group (Preview mode, before rebuild) or vertex-snap mode = detached
+    var s = mode === 'assembly' && snapSt === 'off' ? selInst() : null;
+    if (s) { if (transformControls.object !== s.obj) transformControls.attach(s.obj); }
+    else if (transformControls.object) transformControls.detach();
+  }
+
+  // 3D picking: instance groups only (helpers/grid/axes are not in `built`)
+  var raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), canvas = renderer.domElement, down = null;
+  // shared raycast for click-select and vertex snap; null = canvas has no size
+  function rayHits(x, y, objs){
+    var r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    ndc.set((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    return raycaster.intersectObjects(objs, true);
+  }
+  function uidOf(o){ for (; o; o = o.parent) if (o.userData.uid !== undefined) return o.userData.uid; return null; }
+  function pickAt(x, y){
+    if (mode !== 'assembly') return null;
+    if (typeof transformControls !== 'undefined' && transformControls && (transformControls.dragging || transformControls.axis)) return null;
+    var hits = rayHits(x, y, built);
+    if (!hits) return null;
+    setSelection(hits.length ? uidOf(hits[0].object) : null);
+    return selUid;
+  }
+  canvas.addEventListener('pointerdown', function(e){ down = {x: e.clientX, y: e.clientY, b: e.button}; });
+  canvas.addEventListener('pointerup', function(e){
+    var d = down; down = null;
+    if (!d || d.b !== 0 || e.button !== 0) return;
+    if (Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 4) return; // orbit drag, not a click
+    if (snapSt !== 'off') snapClick(e.clientX, e.clientY); // snap mode: clicks only pick vertices
+    else pickAt(e.clientX, e.clientY);
+  });
+
+  // two-click vertex snap: translate instance A so its picked vertex lands on the picked vertex of B
+  function setStatus(t){ $('status').textContent = t || ''; }
+  var SNAP_A_MSG = 'Snap: click a vertex on the part to MOVE (A)', SNAP_B_MSG = 'Snap: now click a vertex on another part (B)';
+  function clearMarkers(){
+    while (snapMarkers.children.length) { var m = snapMarkers.children.pop(); m.geometry.dispose(); m.material.dispose(); }
+  }
+  function addMarker(w, color){
+    var b = assemblyBox(), r = b.isEmpty() ? 1.5 : Math.max(1.5, 0.015 * b.getSize(new THREE.Vector3()).length());
+    var m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshBasicMaterial({color: color, depthTest: false, depthWrite: false}));
+    m.renderOrder = 999; m.position.copy(w);
+    snapMarkers.add(m);
+  }
+  // nearest of the hit triangle's 3 vertices to the hit point; face.a/b/c are already geometry.index values in r128
+  function snapPick(x, y, objs){
+    var hits = rayHits(x, y, objs), h = hits && hits[0];
+    if (!h || !h.face) return null;
+    var uid = uidOf(h.object);
+    if (uid === null) return null;
+    var pos = h.object.geometry.attributes.position, v = new THREE.Vector3(), best = null, bd = Infinity;
+    [h.face.a, h.face.b, h.face.c].forEach(function(vi){
+      v.fromBufferAttribute(pos, vi).applyMatrix4(h.object.matrixWorld);
+      var d = v.distanceTo(h.point);
+      if (d < bd) { bd = d; best = {uid: uid, mesh: h.object.parent.children.indexOf(h.object), vi: vi, w: v.clone()}; }
+    });
+    return best;
+  }
+  function snapStart(){
+    if (snapSt !== 'off') return;
+    if (mode !== 'assembly') { setStatus('Snap: switch to Assembly mode first'); return; }
+    if (transformControls.dragging) return; // disabling mid-drag would swallow the gizmo's pointerup
+    if (instances.length < 2) { setStatus('Snap: need at least 2 parts'); return; }
+    snapSt = 'pickA'; snapA = snapB = null; clearMarkers();
+    transformControls.enabled = false;
+    setSelection(selUid); // gate in setSelection detaches the gizmo
+    canvas.style.cursor = 'crosshair';
+    $('bSnapV').setAttribute('aria-pressed', true);
+    setStatus(SNAP_A_MSG);
+  }
+  function snapExit(){
+    if (snapSt === 'off') return;
+    snapSt = 'off'; snapA = snapB = null; clearMarkers();
+    transformControls.enabled = true;
+    canvas.style.cursor = '';
+    $('bSnapV').setAttribute('aria-pressed', false);
+    setStatus('');
+    setSelection(selUid); // re-attach the gizmo
+  }
+  function snapRepick(){ snapSt = 'pickA'; snapA = snapB = null; clearMarkers(); setStatus(SNAP_A_MSG); }
+  function snapClick(x, y){
+    if (snapSt === 'pickA') {
+      var a = snapPick(x, y, built);
+      if (!a) { setStatus(SNAP_A_MSG); return; }
+      snapA = a; addMarker(a.w, 0xff2020); snapSt = 'pickB'; setStatus(SNAP_B_MSG);
+    } else if (snapSt === 'pickB') {
+      // A is excluded from the ray test so it cannot occlude B; a click that only hits A finds nothing here
+      var b = snapPick(x, y, built.filter(function(g){ return g.userData.uid !== snapA.uid; }));
+      if (!b) { setStatus('Snap: click a different part'); return; }
+      snapB = b; addMarker(b.w, 0x20c020); snapApply();
+    }
+  }
+  function snapApply(){
+    var A = snapA, B = snapB, k = findInst(A.uid), inst = k >= 0 ? instances[k] : null;
+    if (!inst || !inst.obj) { snapExit(); setStatus('Snap: part A no longer exists'); return; }
+    inst.obj.position.add(B.w.clone().sub(A.w)); // translation only, rotation kept
+    syncMatrixFromObj(inst);
+    inst.obj.updateMatrixWorld(true);
+    var m = inst.obj.children[A.mesh];
+    var after = new THREE.Vector3().fromBufferAttribute(m.geometry.attributes.position, A.vi).applyMatrix4(m.matrixWorld);
+    lastSnapRec = {uidA: A.uid, uidB: B.uid, vAbefore: A.w.toArray(), vB: B.w.toArray(), vAafter: after.toArray()};
+    commit();
+    selUid = A.uid; // keep A selected; snapExit re-attaches the gizmo to it
+    snapExit();
+  }
+  function screenPos(uid){
+    var k = findInst(uid);
+    if (k < 0 || !instances[k].obj) return null;
+    camera.updateMatrixWorld();
+    var v = new THREE.Box3().setFromObject(instances[k].obj).getCenter(new THREE.Vector3()).project(camera);
+    var r = canvas.getBoundingClientRect();
+    return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
+  }
+
+  function renderAsmList(){
+    var L = $('asmList'); L.textContent = '';
+    instances.forEach(function(i){
+      var p = lookupPart(i.partId);
+      var b = document.createElement('button');
+      b.className = 'item' + (i.uid === selUid ? ' sel' : '');
+      b.textContent = (p ? p.name : i.partId) + ' #' + i.uid;
+      b.onclick = function(){ setSelection(i.uid); };
+      L.appendChild(b);
+    });
+    $('asmCount').textContent = instances.length + (instances.length === 1 ? ' instance' : ' instances');
+    $('bDel').disabled = selUid === null;
+    var s = L.querySelector('.sel'); if (s) s.scrollIntoView({block:'nearest'});
+  }
+
+  function frameAll(){
+    var box = assemblyBox(), c = new THREE.Vector3(), r = 200; // empty: frame a 400 mm default
+    if (!box.isEmpty()) { var sp = box.getBoundingSphere(new THREE.Sphere()); c.copy(sp.center); r = Math.max(sp.radius, 1); }
+    var dist = r * 2.5 + 10;
+    controls.target.copy(c);
+    camera.position.set(c.x + dist * 0.7, c.y - dist * 0.8, c.z + dist * 0.55);
+    camera.near = Math.max(dist / 200, 0.05); camera.far = dist * 50;
+    camera.updateProjectionMatrix();
+    controls.update();
+  }
+
+  function setMode(m){
+    if (m === mode) return;
+    snapExit();
+    mode = m;
+    $('bPrev').setAttribute('aria-pressed', m === 'preview');
+    $('bAsm').setAttribute('aria-pressed', m === 'assembly');
+    rebuildInstances(); // builds instance groups in Assembly, disposes them in Preview
+    updateUndoButtons(); // export buttons depend on the mode
+    if (m === 'assembly') { disposeGroup(); setHelpers(400, 50, 100); frameAll(); }
+    else if (current) showPreview();
+  }
+
+  // export: built from instance data only (never the scene graph), so gizmo/grid/markers/highlight are never exported
+  function bakeCurrent(){
+    var recs = [];
+    instances.forEach(function(i){
+      var p = lookupPart(i.partId);
+      if (p) recs.push({name: p.name, uid: i.uid, meshes: p.meshes, matrix: Array.from(i.matrix.elements)});
+    });
+    return EVEIO.bakeAssembly(recs);
+  }
+  function download(name, data, type){
+    var url = URL.createObjectURL(new Blob([data], {type: type}));
+    var a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 10000);
+  }
+  function exportAs(kind){
+    snapExit();
+    try {
+      var baked = bakeCurrent(), n = EVEIO.countTris(baked);
+      if (kind === 'stl') download('eve3_assembly.stl', EVEIO.toSTLBinary(baked), 'application/octet-stream');
+      else {
+        var obj = EVEIO.toOBJ(baked, {mtlName: 'eve3_assembly.mtl'}), mtl = EVEIO.toMTL(baked);
+        download('eve3_assembly.obj', obj, 'text/plain');
+        setTimeout(function(){ download('eve3_assembly.mtl', mtl, 'text/plain'); }, 300);
+      }
+      setStatus('Exported ' + baked.items.length + (baked.items.length === 1 ? ' part, ' : ' parts, ') + n + ' triangles' +
+        (baked.warnings.length ? ' - ' + baked.warnings.join('; ') : ''));
+    } catch (e) {
+      console.error(e);
+      setStatus('Export failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  // JSON save/load: instances reference parts by id; ALL user part definitions are embedded
+  function hasOwn(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
+  function assemblyJSON(){
+    return EVEIO.serializeAssembly(instances.map(function(i){ return {part: i.partId, matrix: Array.from(i.matrix.elements)}; }), userParts);
+  }
+  function saveJSON(){
+    snapExit();
+    try {
+      download('eve3_assembly.json', assemblyJSON(), 'application/json');
+      setStatus('Saved ' + instances.length + ' parts, ' + userParts.length + ' user parts');
+    } catch (e) {
+      console.error(e);
+      setStatus('Save failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+  // shared by the file input and EVEDBG.loadJSON (?debug): parse, plan the part merge, confirm, then replace the assembly in ONE commit
+  function loadAssemblyText(text, name, skipConfirm){
+    snapExit();
+    $('importMsg').textContent = '';
+    var r;
+    try { r = EVEIO.parseAssemblyJSON(text, {knownIds: function(id){ return !!lookupPart(id) || hasOwn(removedParts, id); }}); }
+    catch (e) {
+      var em = e && e.message ? e.message : String(e);
+      setStatus('Load failed: ' + em);
+      return {ok: false, error: em};
+    }
+    // merge plan (no mutation before confirm): same id + identical meshes = reuse; different data = suffixed id
+    var map = Object.create(null), taken = Object.create(null), add = [], renamed = [];
+    function free(id){ return !lookupPart(id) && !hasOwn(removedParts, id) && !(id in taken); }
+    r.userParts.forEach(function(p){
+      var orig = p.id, have = lookupPart(orig) || (hasOwn(removedParts, orig) ? removedParts[orig] : null);
+      if (have && EVEIO.meshesEqual(have.meshes, p.meshes)) {
+        map[orig] = orig;
+        if (!lookupPart(orig)) add.push(have); // identical definition in the holding map: move it back
+        return;
+      }
+      var id = orig, n = 1;
+      while (!free(id)) id = orig + '_' + (++n);
+      if (id !== orig) renamed.push(orig + ' -> ' + id);
+      p.id = id; taken[id] = true; map[orig] = id; add.push(p);
+    });
+    var recs = r.instances.map(function(x){ return {partId: x.part in map ? map[x.part] : x.part, m: x.matrix}; });
+    recs.forEach(function(x){ // part removed earlier this session: bring its definition back
+      if (!lookupPart(x.partId) && hasOwn(removedParts, x.partId) && add.indexOf(removedParts[x.partId]) < 0) add.push(removedParts[x.partId]);
+    });
+    if (!skipConfirm && (instances.length || r.userParts.length) &&
+        !confirm('Load "' + name + '"? This REPLACES the current assembly (' + instances.length + ' parts) and adds ' +
+          add.length + ' imported part(s) to the library.')) {
+      setStatus('load cancelled');
+      return {ok: false, cancelled: true};
+    }
+    add.forEach(function(p){ delete removedParts[p.id]; userParts.push(p); });
+    instances = recs.map(function(x){ return {uid: ++uidCounter, partId: x.partId, matrix: new THREE.Matrix4().fromArray(x.m), obj: null}; });
+    selUid = null;
+    onLibraryChanged();
+    rebuildInstances();
+    if (mode === 'assembly') frameAll();
+    commit();
+    var skippedIds = r.skipped.map(function(s){ return s.part; }).filter(function(id, k, a){ return a.indexOf(id) === k; });
+    r.warnings.forEach(function(w){ importNote(w); });
+    renamed.forEach(function(t){ importNote('part id clash with different geometry, renamed: ' + t); });
+    setStatus('Loaded ' + instances.length + ' parts' +
+      (r.skipped.length ? ' (' + r.skipped.length + ' skipped: unknown part id ' + skippedIds.join(', ') + ')' : '') +
+      (add.length ? ', ' + add.length + ' part(s) added to the library' : ''));
+    return {ok: true, loaded: instances.length, skipped: r.skipped, added: add.map(function(p){ return p.id; }), renamed: renamed, warnings: r.warnings};
+  }
+
+  // sidebar
+  var CATS = ['Beams','Angular beams','Axles','Pegs & bushes','Gears','Wheels','Motors','Sensors','Brick','Misc'];
+  PARTS.forEach(function(p){ if (CATS.indexOf(p.category) < 0) CATS.push(p.category); });
+  var list = $('list'), items = []; // items: {p, el (row that is shown/hidden), det}
+  // idempotent: rebuilds #list + items, keeps search filter, each category's open state and the selection highlight
+  function buildSidebar(){
+    var open = {};
+    Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ open[d.dataset.cat] = d.open; });
+    list.textContent = ''; items = [];
+    var L = library(), cats = CATS.slice();
+    userParts.forEach(function(p){ if (cats.indexOf(p.category) < 0) cats.push(p.category); }); // 'Imported', or a category from a loaded JSON
+    cats.forEach(function(c){
+      var ps = L.filter(function(p){ return p.category === c; });
+      if (!ps.length) return;
+      var det = document.createElement('details'); det.dataset.cat = c; det.open = open[c] !== false;
+      var sum = document.createElement('summary'); sum.textContent = c; det.appendChild(sum);
+      ps.forEach(function(p){
+        var b = document.createElement('button'); b.className = 'item'; b.textContent = p.name; b.dataset.id = p.id;
+        b.onclick = function(){ select(p); };
+        var el = b;
+        if (p.user) {
+          el = document.createElement('div'); el.className = 'row';
+          var x = document.createElement('button'); x.className = 'xbtn'; x.textContent = '×';
+          x.title = 'Remove part'; x.setAttribute('aria-label', 'Remove part');
+          x.onclick = function(e){ e.stopPropagation(); removeUserPart(p); };
+          el.appendChild(b); el.appendChild(x);
+        }
+        det.appendChild(el); items.push({p:p, el:el, det:det});
+      });
+      list.appendChild(det);
+    });
+    applyFilter();
+    markSel();
+  }
+  function visible(){ return items.filter(function(i){ return i.el.style.display !== 'none'; }).map(function(i){ return i.p; }); }
+  function applyFilter(){
+    var q = $('search').value.trim().toLowerCase();
+    items.forEach(function(i){ i.el.style.display = (!q || (i.p.name + ' ' + i.p.id + ' ' + i.p.category).toLowerCase().indexOf(q) >= 0) ? '' : 'none'; });
+    Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){
+      d.style.display = items.some(function(i){ return i.det === d && i.el.style.display !== 'none'; }) ? '' : 'none';
+    });
+  }
+  $('search').addEventListener('input', applyFilter);
+  buildSidebar();
+
+  // import: STL / OBJ(+MTL by basename) -> user parts; one commit for the whole selection
+  function importNote(t, err){ var d = document.createElement('div'); d.textContent = t; if (err) d.className = 'err'; $('importMsg').appendChild(d); }
+  function uniqueId(name){
+    var base = 'user_' + name.toLowerCase().replace(/[^a-z0-9_]/g, '_'), id = base, n = 1;
+    while (lookupPart(id) || removedParts[id]) id = base + '_' + (++n);
+    return id;
+  }
+  function importFiles(files){
+    $('importMsg').textContent = '';
+    var scale = Number($('importScale').value);
+    if (!isFinite(scale) || scale <= 0) { importNote('Import aborted: scale must be a number > 0', true); return; }
+    var jobs = [], mtls = {}, maxB = EVEIO.LIMITS.maxBytes;
+    files.forEach(function(f){
+      var m = /^(.*)\.([^.]*)$/.exec(f.name), base = m ? m[1] : f.name, ext = m ? m[2].toLowerCase() : '';
+      if (ext === 'mtl') {
+        var k = base.toLowerCase();
+        if (mtls[k]) importNote(f.name + ': replaces ' + mtls[k].name + ' (same basename, last .mtl wins)');
+        mtls[k] = f;
+      } else if (ext === 'stl' || ext === 'obj') jobs.push({f: f, ext: ext, base: base});
+      else importNote(f.name + ': unsupported file type (use .stl, .obj, .mtl)', true);
+    });
+    Object.keys(mtls).forEach(function(k){
+      if (!jobs.some(function(j){ return j.ext === 'obj' && j.base.toLowerCase() === k; })) importNote('orphan .mtl ignored: ' + mtls[k].name);
+    });
+    function read(j){
+      if (j.f.size > maxB) return Promise.reject(new Error('file too large (' + j.f.size + ' bytes, limit ' + maxB + ')'));
+      if (j.ext === 'stl') return j.f.arrayBuffer().then(function(buf){ return EVEIO.parseSTL(buf); });
+      var mtl = mtls[j.base.toLowerCase()];
+      return Promise.all([j.f.text(), mtl ? mtl.text() : null]).then(function(t){ return EVEIO.parseOBJ(t[0], t[1]); });
+    }
+    // reads run in parallel; results are applied in selection order, one file's error never aborts the others
+    Promise.all(jobs.map(function(j){ return read(j).then(function(r){ return {j: j, r: r}; }, function(e){ return {j: j, e: e}; }); }))
+      .then(function(res){
+        var last = null, n = 0;
+        res.forEach(function(x){
+          var name = x.j.f.name;
+          try {
+            if (x.e) throw x.e;
+            x.r.warnings.forEach(function(w){ importNote(name + ': ' + w); });
+            x.r.meshes.forEach(function(m){ for (var k = 0; k < m.v.length; k++) m.v[k] *= scale; });
+            var p = EVEIO.finishPart({id: uniqueId(x.j.base), name: x.j.base, category: 'Imported', meshes: x.r.meshes});
+            userParts.push(p); last = p; n++;
+          } catch (e) { importNote(name + ': ' + (e && e.message ? e.message : e), true); }
+        });
+        if (!last) { if (jobs.length) importNote('Nothing imported', true); return; }
+        buildSidebar();
+        commit();
+        select(last);
+        importNote('Imported ' + n + ' part' + (n === 1 ? '' : 's') + (scale !== 1 ? ' (scale ' + scale + ')' : ''));
+      })
+      .catch(function(e){ importNote('Import failed: ' + (e && e.message ? e.message : e), true); });
+  }
+  $('bImport').onclick = function(){ $('importFile').click(); };
+  $('importFile').onchange = function(){
+    var fs = Array.prototype.slice.call(this.files || []);
+    this.value = ''; // File objects stay readable; clearing lets the same file be picked again
+    if (fs.length) importFiles(fs);
+  };
+  $('importPreset').onchange = function(){ if (this.value) $('importScale').value = this.value; };
+  $('importScale').oninput = function(){ var s = $('importPreset'); s.value = String(Number(this.value)); if (s.selectedIndex < 0) s.value = ''; };
+
+  // remove an imported part: definition goes to removedParts (undoable), its instances are deleted, ONE commit
+  function removeUserPart(p){
+    var k = userParts.indexOf(p);
+    if (k < 0) return;
+    var n = instances.filter(function(i){ return i.partId === p.id; }).length;
+    if (n > 0 && !confirm('Remove "' + p.name + '" and its ' + n + ' placed instance(s)?')) return;
+    snapExit();
+    instances = instances.filter(function(i){ return i.partId !== p.id; });
+    userParts.splice(k, 1); removedParts[p.id] = p;
+    rebuildInstances(); // disposes the removed instances' groups, clears selUid if it was one of them
+    onLibraryChanged(); // sidebar + falls back to PARTS[0] if `current` was this part
+    commit();
+  }
+
+  function onKey(e){
+    var t = e.target && e.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
+    var k = (e.key || '').toLowerCase(), plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (snapSt !== 'off') { // snap mode: only Esc / Backspace / S; everything else ignored
+      if (e.key === 'Escape' || (k === 's' && plain)) { e.preventDefault(); snapExit(); }
+      else if (e.key === 'Backspace') { e.preventDefault(); snapRepick(); }
+      return;
+    }
+    if (k === 's' && plain && mode === 'assembly') {
+      e.preventDefault();
+      snapStart();
+    } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (k === 'z' || k === 'y')) {
+      e.preventDefault();
+      if (k === 'y' || e.shiftKey) redo(); else undo();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      var step = e.key === 'ArrowDown' ? 1 : -1, i, n;
+      if (mode === 'assembly') {
+        if (!instances.length) return;
+        e.preventDefault();
+        i = findInst(selUid); n = i < 0 ? 0 : i + step;
+        setSelection(instances[(n + instances.length) % instances.length].uid);
+      } else {
+        var v = visible(); if (!v.length) return;
+        e.preventDefault();
+        i = v.indexOf(current); n = i < 0 ? 0 : i + step;
+        select(v[(n + v.length) % v.length]);
+      }
+    } else if ((k === 'w' || k === 'e') && mode === 'assembly' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      setGizmoMode(k === 'w' ? 'translate' : 'rotate');
+    } else if (e.key === 'Delete' && mode === 'assembly' && selUid !== null) {
+      e.preventDefault();
+      deleteSelected();
+    } else if (e.key === 'Escape' && mode === 'assembly') {
+      e.preventDefault();
+      setSelection(null);
+    }
+  }
+  window.addEventListener('keydown', onKey);
+
+  // toolbar
+  function toggle(id, fn){ var b = $(id); b.onclick = function(){ var on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', on); fn(on); }; }
+  $('bPrev').onclick = function(){ setMode('preview'); };
+  $('bAsm').onclick = function(){ setMode('assembly'); };
+  $('bReset').onclick = function(){ if (mode === 'assembly') frameAll(); else if (current) frame(); };
+  toggle('bWire', function(on){
+    wire = on;
+    (group ? [group] : []).concat(built).forEach(function(g){ g.traverse(function(o){ if (o.isMesh) o.material.wireframe = on; }); });
+  });
+  toggle('bRot', function(on){ controls.autoRotate = on; });
+  toggle('bGrid', function(on){ helpers.visible = on; });
+  $('bAdd').onclick = addInstance;
+  $('bDel').onclick = deleteSelected;
+  $('bFrameAll').onclick = function(){ if (mode === 'assembly') frameAll(); };
+  $('bUndo').onclick = undo;
+  $('bRedo').onclick = redo;
+  $('bExpSTL').onclick = function(){ exportAs('stl'); };
+  $('bExpOBJ').onclick = function(){ exportAs('obj'); };
+  $('bSaveJSON').onclick = saveJSON;
+  $('bLoadJSON').onclick = function(){ $('jsonFile').click(); };
+  $('jsonFile').onchange = function(){
+    var f = this.files && this.files[0];
+    this.value = ''; // lets the same file be loaded again
+    if (!f) return;
+    snapExit();
+    var max = EVEIO.LIMITS.maxBytes;
+    if (f.size > max) { setStatus('Load failed: file too large (' + f.size + ' bytes, limit ' + max + ')'); return; }
+    setStatus('loading...');
+    f.text().then(function(t){ loadAssemblyText(t, f.name, false); },
+      function(e){ setStatus('Load failed: ' + (e && e.message ? e.message : e)); });
+  };
+  $('bMove').onclick = function(){ setGizmoMode('translate'); };
+  $('bRotG').onclick = function(){ setGizmoMode('rotate'); };
+  toggle('bSnapR', function(on){ transformControls.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null); });
+  toggle('bSnapT', function(on){ transformControls.setTranslationSnap(on ? 1 : null); });
+  $('bSnapV').onclick = function(){ if (snapSt === 'off') snapStart(); else snapExit(); };
+
+  // debug handle for browser tests, only with ?debug in the URL; nothing in the viewer depends on it
+  if (/[?&]debug\b/.test(location.search)) { window.EVEDBG = {
+    get mode(){ return mode; },
+    instances: function(){ return instances.map(function(i){
+      var p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+      i.matrix.decompose(p, q, s);
+      var e = new THREE.Euler().setFromQuaternion(q), d = 180 / Math.PI;
+      return {uid:i.uid, partId:i.partId, pos:i.obj ? i.obj.position.toArray() : new THREE.Vector3().setFromMatrixPosition(i.matrix).toArray(), euler:[e.x*d, e.y*d, e.z*d]};
+    }); },
+    setMode: function(m){ if (m === 'preview' || m === 'assembly') setMode(m); },
+    add: function(){ addInstance(); },
+    select: function(uid){ setSelection(uid); },
+    selected: function(){ return selUid; },
+    pickAt: function(clientX, clientY){ return pickAt(clientX, clientY); },
+    screenPos: function(uid){ return screenPos(uid); },
+    undo: function(){ undo(); },
+    redo: function(){ redo(); },
+    stack: function(){ return {len: undoStack.length, idx: undoIdx}; },
+    gizmo: function(){
+      var t = transformControls;
+      return {attachedUid: t.object ? t.object.userData.uid : null, mode: t.mode, size: t.size, dragging: t.dragging, axis: t.axis, snapRot: t.rotationSnap, snapTrans: t.translationSnap};
+    },
+    gizmoHandle: function(axis){ return gizmoHandle(axis); },
+    setGizmoMode: function(m){ if (m === 'translate' || m === 'rotate') setGizmoMode(m); },
+    snapMode: function(on){ if (on) snapStart(); else snapExit(); return snapSt; },
+    snapState: function(){
+      return {state: snapSt, uidA: snapA ? snapA.uid : null, uidB: snapB ? snapB.uid : null,
+        vA: snapA ? snapA.w.toArray() : null, vB: snapB ? snapB.w.toArray() : null, markers: snapMarkers.children.length};
+    },
+    lastSnap: function(){ return lastSnapRec ? JSON.parse(JSON.stringify(lastSnapRec)) : null; },
+    library: function(){ return {builtin: PARTS.length, user: userParts.map(function(p){ return p.id; }), removed: Object.keys(removedParts)}; },
+    sidebarCount: function(){ return document.querySelectorAll('#list .item').length; },
+    exportInfo: function(){ var b = bakeCurrent(); return {tris: EVEIO.countTris(b), parts: b.items.length}; },
+    saveJSON: function(){ return assemblyJSON(); },
+    loadJSON: function(text){ return loadAssemblyText(text, 'debug', true); }
+  }; }
+
+  function resize(){
+    var w = view.clientWidth, h = view.clientHeight;
+    if (!w || !h) return;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(view);
+  resize();
+
+  (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+  commit(); // initial empty-assembly snapshot so the first add can be undone
+  select(PARTS[0]);
+})();
+</script>
+</body>
+</html>
