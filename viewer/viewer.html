@@ -77,6 +77,9 @@ body.four #vps{display:grid}
 #fsBar{position:absolute;right:10px;top:10px;z-index:3;display:none}
 body.fs #fsBar{display:flex}
 body.fs header,body.fs aside,body.fs #addRow,body.fs #info,body.fs footer{display:none}
+#view.drop{outline:2px solid var(--accent);outline-offset:-2px}
+.vp.drop{box-shadow:inset 0 0 0 3px var(--accent)}
+aside#asm.drop{outline:2px solid var(--accent);outline-offset:-2px}
 #rband{position:absolute;z-index:2;pointer-events:none;border:1px solid var(--accent);background:var(--accent);opacity:.3}
 #rband[hidden]{display:none}
 #view canvas{display:block;width:100%;height:100%}
@@ -576,12 +579,29 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   function addInstance(){
     var ps = items.map(function(x){ return x.p; }).filter(function(p){ return pmarks.indexOf(p.id) >= 0 && lookupPart(p.id); });
     if (!ps.length && current) ps = [current];
+    addParts(ps, null, false);
+  }
+  var DROP_GAP = 20; // mm between parts dropped together (same as the Add button)
+  // along-the-row extent of a box: [lo, hi] of its coordinate along the axis-aligned direction d
+  function rowExt(b, d){ var a = d.x ? 'x' : d.y ? 'y' : 'z'; return d.x + d.y + d.z > 0 ? [b.min[a], b.max[a]] : [-b.max[a], -b.min[a]]; }
+  // drop = null: the Add placement. drop = {at: Vector3 (target bbox centre), ground: bool (rest on z = 0), dir: Vector3 (row direction)}: put the
+  // first part's bbox centre at `at`, the next ones in a row along dir with DROP_GAP between them
+  function addParts(ps, drop, keepView){
+    ps = ps.filter(function(p){ return p && lookupPart(p.id); });
     if (!ps.length) return;
+    var prevEnd = null;
     var uids = ps.map(function(p){
-      var m = new THREE.Matrix4(), box = assemblyBox();
-      if (!box.isEmpty()) {
-        var pb = partBox(p);
-        m.makeTranslation(box.max.x + 20 - (pb.isEmpty() ? 0 : pb.min.x), 0, 0);
+      var m = new THREE.Matrix4(), pb = partBox(p);
+      if (drop) {
+        var t = drop.at.clone().sub(pb.isEmpty() ? new THREE.Vector3() : pb.getCenter(new THREE.Vector3()));
+        if (drop.ground && !pb.isEmpty()) t.z = -pb.min.z;
+        var e = pb.isEmpty() ? [0, 0] : rowExt(pb.clone().translate(t), drop.dir);
+        if (prevEnd !== null) { t.addScaledVector(drop.dir, prevEnd + DROP_GAP - e[0]); e = [prevEnd + DROP_GAP, prevEnd + DROP_GAP + e[1] - e[0]]; }
+        prevEnd = e[1];
+        m.makeTranslation(t.x, t.y, t.z);
+      } else {
+        var box = assemblyBox();
+        if (!box.isEmpty()) m.makeTranslation(box.max.x + 20 - (pb.isEmpty() ? 0 : pb.min.x), 0, 0);
       }
       var inst = {uid: ++uidCounter, partId: p.id, matrix: m, obj: null};
       instances.push(inst);
@@ -589,7 +609,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     });
     setMarks(uids, 'i:' + uids[uids.length - 1]);
     rebuildInstances();
-    if (mode === 'assembly' && instances.length === uids.length) frameAll();
+    if (drop && bbSnap) bbSnapMove(uids.map(function(u){ return instances[findInst(u)]; }).filter(function(i){ return i.obj; }), false); // bounding-box Snap, once for the new set
+    if (!keepView && mode === 'assembly' && instances.length === uids.length) frameAll();
     commit();
   }
 
@@ -1106,6 +1127,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       ps.forEach(function(p){
         var b = document.createElement('button'); b.className = 'item'; b.textContent = p.name; b.dataset.id = p.id;
         b.onclick = function(e){ partClick(e, p); };
+        b.draggable = true;
+        b.ondragstart = function(e){ // a marked part drags all marked parts; an unmarked one becomes the single mark (like a click) and drags alone
+          if (pmarks.indexOf(p.id) < 0) select(p);
+          var ids = items.map(function(x){ return x.p.id; }).filter(function(id){ return pmarks.indexOf(id) >= 0; });
+          e.dataTransfer.setData(DND_MIME, JSON.stringify(ids)); e.dataTransfer.setData('text/plain', ids.join(', '));
+          e.dataTransfer.effectAllowed = 'copy';
+        };
         var el = b;
         if (p.user) {
           el = document.createElement('div'); el.className = 'row';
@@ -1405,7 +1433,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     partMarks: function(){ return pmarks.slice(); },
     four: function(){ return {on: fourView, max: maxVp, vps: V4.map(function(v){ var r = v.el.getBoundingClientRect(); return {name: v.name, ortho: v.ortho, rect: [r.left, r.top, r.width, r.height], pos: v.cam.position.toArray(), up: v.cam.up.toArray(), zoom: v.cam.zoom, orbitEnabled: v.orbit.enabled, label: v.el.querySelector('.vpl').textContent}; })}; },
     setFour: function(on){ setFour(!!on); },
-    project: function(name, p){ var v = V4.filter(function(x){ return x.name === name; })[0]; v.cam.updateMatrixWorld(); var q = new THREE.Vector3(p[0], p[1], p[2]).project(v.cam), r = v.el.getBoundingClientRect(); return [r.left + (q.x + 1) / 2 * r.width, r.top + (1 - q.y) / 2 * r.height]; },
+    project: function(name, p){ var v = [V0].concat(V4).filter(function(x){ return x.name === name; })[0]; v.cam.updateMatrixWorld(); var q = new THREE.Vector3(p[0], p[1], p[2]).project(v.cam), r = v.el.getBoundingClientRect(); return [r.left + (q.x + 1) / 2 * r.width, r.top + (1 - q.y) / 2 * r.height]; },
+    // independent of dropPlace: unproject two points of the cursor ray and intersect the plane <axis> = k by hand
+    unproject: function(name, x, y, axis, k){
+      var v = [V0].concat(V4).filter(function(q){ return q.name === name; })[0], r = v.el.getBoundingClientRect(); v.cam.updateMatrixWorld();
+      var nx = (x - r.left) / r.width * 2 - 1, ny = -(y - r.top) / r.height * 2 + 1, o, d;
+      if (v.cam.isOrthographicCamera) { o = new THREE.Vector3(nx, ny, -1).unproject(v.cam); d = new THREE.Vector3(nx, ny, 1).unproject(v.cam).sub(o); }
+      else { o = v.cam.position.clone(); d = new THREE.Vector3(nx, ny, 0.5).unproject(v.cam).sub(o); }
+      return o.addScaledVector(d, (k - o[axis]) / d[axis]).toArray();
+    },
     vpScreenPos: function(uid, name){ return screenPos(uid, V4.filter(function(x){ return x.name === name; })[0]); },
     vpHandle: function(axis, name){ return gizmoHandle(axis, V4.filter(function(x){ return x.name === name; })[0]); },
     fsRefresh: function(){ onFs(); },
@@ -1446,6 +1482,63 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     saveJSON: function(){ return assemblyJSON(); },
     loadJSON: function(text){ return loadAssemblyText(text, 'debug', true); }
   }; }
+
+  // ---- drag and drop from the part list: onto the 3D view (placed where the cursor points) or onto the Assembly panel (the Add placement)
+  var DND_MIME = 'application/x-eve3-parts';
+  function dndOurs(e){ return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], DND_MIME) >= 0); }
+  function dndIds(e){
+    try { var a = JSON.parse(e.dataTransfer.getData(DND_MIME)); return Array.isArray(a) ? a.filter(function(x){ return typeof x === 'string'; }) : []; } catch (err) { return []; }
+  }
+  function dropVp(t){
+    if (!fourView) return V0;
+    var el = t && t.closest ? t.closest('.vp') : null;
+    return V4.filter(function(v){ return v.el === el; })[0] || null;
+  }
+  function clearDrop(){ view.classList.remove('drop'); V4.forEach(function(v){ v.el.classList.remove('drop'); }); $('asm').classList.remove('drop'); }
+  // where a drop at client (x, y) in viewport v lands: ray through v's camera meets z = 0 (Perspective, Top, single view), y = assembly centre y (Front)
+  // or x = assembly centre x (Left); null = the ray misses the plane (the caller falls back to the Add placement)
+  function dropPlace(v, x, y){
+    var r = v.el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    var ab = assemblyBox(), c = ab.isEmpty() ? new THREE.Vector3() : ab.getCenter(new THREE.Vector3()), n = new THREE.Vector3(0, 0, 1), k = 0, dir = new THREE.Vector3(1, 0, 0);
+    if (v.name === 'front') { n.set(0, 1, 0); k = -c.y; }
+    else if (v.name === 'left') { n.set(1, 0, 0); k = -c.x; dir.set(0, -1, 0); } // screen right in the Left view is -Y
+    ndc.set((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1);
+    raycaster.setFromCamera(ndc, v.cam);
+    var pt = raycaster.ray.intersectPlane(new THREE.Plane(n, k), new THREE.Vector3());
+    if (!pt) return null;
+    var ground = n.z === 1;
+    if (v.name === 'front') pt.y = c.y; else if (v.name === 'left') pt.x = c.x;
+    return {at: pt, ground: ground, dir: dir};
+  }
+  function dropParts(ids, v, x, y){
+    var ps = ids.map(lookupPart).filter(Boolean);
+    if (!ps.length) return;
+    var drop = v ? dropPlace(v, x, y) : null; // computed with the camera the user dropped on, before a Preview -> Assembly switch reframes
+    if (mode !== 'assembly') setMode('assembly');
+    addParts(ps, drop, !!v);
+    setStatus('Dropped ' + ps.length + ' part' + (ps.length === 1 ? '' : 's') + (drop ? '' : ' (Add placement)'));
+  }
+  // foreign drags (files, text) are accepted by nobody, but their default (the browser opening the file) is cancelled over these areas
+  function dndTarget(el, vpOf, mark){
+    el.addEventListener('dragover', function(e){
+      e.preventDefault();
+      clearDrop();
+      if (!dndOurs(e)) { e.dataTransfer.dropEffect = 'none'; return; }
+      e.dataTransfer.dropEffect = 'copy';
+      mark(e);
+    });
+    el.addEventListener('dragleave', clearDrop);
+    el.addEventListener('drop', function(e){
+      e.preventDefault(); clearDrop();
+      if (!dndOurs(e)) return;
+      var v = vpOf(e);
+      if (v !== undefined) dropParts(dndIds(e), v, e.clientX, e.clientY);
+    });
+  }
+  dndTarget(view, function(e){ return dropVp(e.target) || undefined; }, function(e){ var v = dropVp(e.target); if (v) (v === V0 ? view : v.el).classList.add('drop'); });
+  dndTarget($('asm'), function(){ return null; }, function(){ $('asm').classList.add('drop'); });
+  document.addEventListener('dragend', clearDrop);
 
   // ---- four view: framing, switching, rendering
   function contentBox(){
