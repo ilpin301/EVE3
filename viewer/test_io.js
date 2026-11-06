@@ -610,6 +610,135 @@ test('meshesEqual: exact structural comparison', function () {
   assert.strictEqual(IO.meshesEqual(a, null), false);
 });
 
+// ---------------------------------------------------------------- keyboard bindings
+
+function ev(key, mods) { return Object.assign({ key: key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false }, mods || {}); }
+function act(b, key, mods) { return IO.matchAction(b, IO.comboFromEvent(ev(key, mods))); }
+
+test('keys: comboFromEvent builds canonical combos, bare modifiers give null', function () {
+  assert.strictEqual(IO.comboFromEvent(ev('z', { ctrlKey: true })), 'Ctrl+Z');
+  assert.strictEqual(IO.comboFromEvent(ev('Z', { ctrlKey: true, shiftKey: true })), 'Ctrl+Shift+Z');
+  assert.strictEqual(IO.comboFromEvent(ev('z', { metaKey: true })), 'Ctrl+Z', 'Meta counts as Ctrl');
+  assert.strictEqual(IO.comboFromEvent(ev('x', { shiftKey: true, altKey: true, ctrlKey: true })), 'Ctrl+Alt+Shift+X');
+  assert.strictEqual(IO.comboFromEvent(ev(' ')), 'Space');
+  assert.strictEqual(IO.comboFromEvent(ev('Delete')), 'Delete');
+  ['Control', 'Shift', 'Alt', 'Meta', 'Dead', '', undefined].forEach(function (k) {
+    assert.strictEqual(IO.comboFromEvent(ev(k)), null, String(k));
+  });
+  assert.strictEqual(IO.comboFromEvent(null), null);
+});
+
+test('keys: normalizeCombo canonicalises and rejects junk', function () {
+  assert.strictEqual(IO.normalizeCombo('Shift+Ctrl+z'), 'Ctrl+Shift+Z');
+  assert.strictEqual(IO.normalizeCombo('Alt+Ctrl+Shift+F5'), 'Ctrl+Alt+Shift+F5');
+  assert.strictEqual(IO.normalizeCombo('Ctrl++'), 'Ctrl++');
+  assert.strictEqual(IO.normalizeCombo('Delete'), 'Delete');
+  ['', 'Ctrl+', 'Ctrl+Shift', 'Shift', 'ctrl+z', 'Ctrl+ Z', ' ', 'Ctrl+Foo-Bar', 'Ctrl+1x!', 5, null, {}].forEach(function (s) {
+    assert.strictEqual(IO.normalizeCombo(s), null, JSON.stringify(s));
+  });
+});
+
+test('keys: defaults are valid, canonical and free of duplicates', function () {
+  var d = IO.defaultBindings(), seen = {};
+  assert.strictEqual(Object.keys(d).length, IO.KEY_ACTIONS.length);
+  IO.KEY_ACTIONS.forEach(function (a) {
+    d[a.id].forEach(function (c) {
+      assert.strictEqual(IO.normalizeCombo(c), c, c);
+      assert.ok(!seen[c], 'duplicate default ' + c);
+      assert.ok(IO.FIXED_KEYS.indexOf(c) < 0, c);
+      seen[c] = a.id;
+    });
+  });
+  assert.deepStrictEqual(IO.mergeBindings(null), d);
+  assert.deepStrictEqual(IO.mergeBindings(undefined), d);
+});
+
+test('keys: default table reproduces the old hard-coded keys', function () {
+  var b = IO.defaultBindings();
+  assert.strictEqual(act(b, 'w'), 'gizmoMove');
+  assert.strictEqual(act(b, 'W'), 'gizmoMove', 'Caps Lock');
+  assert.strictEqual(act(b, 'W', { shiftKey: true }), 'gizmoMove', 'old code ignored Shift');
+  assert.strictEqual(act(b, 'e'), 'gizmoRotate');
+  assert.strictEqual(act(b, 'S', { shiftKey: true }), 'snapVertex');
+  assert.strictEqual(act(b, 'z', { ctrlKey: true }), 'undo');
+  assert.strictEqual(act(b, 'z', { metaKey: true }), 'undo');
+  assert.strictEqual(act(b, 'Z', { ctrlKey: true, shiftKey: true }), 'redo');
+  assert.strictEqual(act(b, 'y', { ctrlKey: true }), 'redo');
+  assert.strictEqual(act(b, 'Y', { ctrlKey: true, shiftKey: true }), 'redo');
+  assert.strictEqual(act(b, 'Delete'), 'deleteSel');
+  assert.strictEqual(act(b, 'Escape'), 'deselect');
+  assert.strictEqual(act(b, 'w', { ctrlKey: true }), null, 'Ctrl+W is not the gizmo');
+  assert.strictEqual(act(b, 's', { altKey: true }), null);
+  assert.strictEqual(act(b, 'ArrowDown'), null, 'list stepping stays hard-wired');
+  assert.strictEqual(act(b, 'Backspace'), null);
+});
+
+test('keys: findConflict names the other action and refuses fixed keys', function () {
+  var b = IO.defaultBindings();
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'Ctrl+Z'), 'undo');
+  assert.strictEqual(IO.findConflict(b, 'undo', 'Ctrl+Z'), null, 'own binding is not a conflict');
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'Ctrl+Shift+Z'), 'redo');
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'Q'), null);
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'ArrowUp'), '@fixed');
+  assert.strictEqual(IO.findConflict(b, 'frameAll', 'Backspace'), '@fixed');
+});
+
+test('keys: mergeBindings ignores corrupt, unknown, duplicate and fixed entries', function () {
+  var d = IO.defaultBindings();
+  [42, 'x', [], true, { undo: 'Ctrl+Q' }, { nope: ['A'] }, { undo: [5, null, {}, 'junk+'] }].forEach(function (s, i) {
+    var m = IO.mergeBindings(s);
+    assert.deepStrictEqual(Object.keys(m).sort(), Object.keys(d).sort(), 'case ' + i + ' keeps all actions');
+    if (i < 6) assert.deepStrictEqual(m, d, 'case ' + i + ' -> defaults');
+  });
+  var m = IO.mergeBindings({ undo: ['ctrl+z', 'Shift+Ctrl+Q', 'Shift+Ctrl+Q', 'Backspace'], wireframe: [] });
+  assert.deepStrictEqual(m.undo, ['Ctrl+Shift+Q'], 'lower-case ctrl+z is invalid, duplicate and fixed key dropped');
+  assert.deepStrictEqual(m.wireframe, [], 'empty list = cleared');
+  assert.deepStrictEqual(m.redo, d.redo, 'untouched actions keep defaults');
+  // saved combos that duplicate each other: the earlier action in table order wins
+  m = IO.mergeBindings({ gizmoMove: ['Q'], redo: ['Q'] });
+  assert.deepStrictEqual(m.gizmoMove, ['Q']);
+  assert.deepStrictEqual(m.redo, ['Ctrl+Y', 'Ctrl+Shift+Z'], 'duplicate dropped, list emptied -> default');
+  // a saved combo that is the default of an action missing from saved loses; its own list falls back to the default
+  m = IO.mergeBindings({ gizmoRotate: ['W'] });
+  assert.deepStrictEqual(m.gizmoMove, ['W']);
+  assert.deepStrictEqual(m.gizmoRotate, ['E']);
+  // ... but when both are saved the user's choice stands
+  m = IO.mergeBindings({ gizmoRotate: ['W'], gizmoMove: [] });
+  assert.deepStrictEqual(m.gizmoRotate, ['W']);
+  assert.deepStrictEqual(m.gizmoMove, []);
+});
+
+test('keys: Snap 15/1mm defaults; stale saved auto-rotate = A (old default) is dropped cleanly', function () {
+  var d = IO.defaultBindings();
+  assert.deepStrictEqual([d.snap15, d.snap1mm, d.autoRotate], [['A'], ['Z'], ['T']]);
+  assert.strictEqual(act(d, 'a'), 'snap15');
+  assert.strictEqual(act(d, 'z'), 'snap1mm');
+  assert.strictEqual(act(d, 't'), 'autoRotate');
+  assert.strictEqual(act(d, 'z', { ctrlKey: true }), 'undo', 'Ctrl+Z is still undo');
+  var m = IO.mergeBindings(JSON.parse('{"autoRotate":["A"]}')); // what an older version saved
+  assert.deepStrictEqual(m.snap15, ['A'], 'the new default owner keeps A');
+  assert.deepStrictEqual(m.autoRotate, ['T'], 'stale override dropped, default restored');
+  assert.deepStrictEqual(m, d);
+  // stale override next to other valid overrides
+  m = IO.mergeBindings({ autoRotate: ['A'], frameAll: ['Q'] });
+  assert.deepStrictEqual([m.snap15, m.autoRotate, m.frameAll], [['A'], ['T'], ['Q']]);
+  // the user moved Snap 15 away: A is theirs to give to auto-rotate
+  m = IO.mergeBindings({ autoRotate: ['A'], snap15: ['Q'] });
+  assert.deepStrictEqual([m.snap15, m.autoRotate], [['Q'], ['A']]);
+});
+
+test('keys: merge(overrides(merge(x))) is stable', function () {
+  var x = { gizmoMove: ['Q'], redo: ['Ctrl+Shift+Z'], deselect: [], frameAll: ['Ctrl+Alt+F'] };
+  var a = IO.mergeBindings(x), o = IO.bindingOverrides(a), b = IO.mergeBindings(JSON.parse(JSON.stringify(o)));
+  assert.deepStrictEqual(b, a);
+  assert.deepStrictEqual(Object.keys(o).sort(), ['deselect', 'frameAll', 'gizmoMove', 'redo']);
+  assert.deepStrictEqual(IO.bindingOverrides(IO.defaultBindings()), {});
+  assert.strictEqual(act(a, 'q'), 'gizmoMove');
+  assert.strictEqual(act(a, 'w'), null);
+  assert.strictEqual(act(a, 'Escape'), null);
+  assert.strictEqual(act(a, 'f', { ctrlKey: true, altKey: true }), 'frameAll');
+});
+
 // ---------------------------------------------------------------- runner
 
 var failed = 0;

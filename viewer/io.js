@@ -498,7 +498,126 @@
     return true;
   }
 
+  // ---------------------------------------------------------------- keyboard bindings
+
+  // action id -> list of combos ("Ctrl+Alt+Shift+Key", key = e.key, single letters upper-case). Defaults reproduce the old hard-coded keys.
+  var KEY_ACTIONS = [
+    { id: 'gizmoMove', label: 'Move gizmo', keys: ['W'] },
+    { id: 'gizmoRotate', label: 'Rotate gizmo', keys: ['E'] },
+    { id: 'snapVertex', label: 'Snap vertex', keys: ['S'] },
+    { id: 'snap15', label: 'Snap 15°', keys: ['A'] },
+    { id: 'snap1mm', label: 'Snap 1 mm', keys: ['Z'] },
+    { id: 'deleteSel', label: 'Delete', keys: ['Delete'] },
+    { id: 'undo', label: 'Undo', keys: ['Ctrl+Z'] },
+    { id: 'redo', label: 'Redo', keys: ['Ctrl+Y', 'Ctrl+Shift+Z'] },
+    { id: 'deselect', label: 'Deselect', keys: ['Escape'] },
+    { id: 'frameAll', label: 'Frame all', keys: ['F'] },
+    { id: 'resetView', label: 'Reset view', keys: ['R'] },
+    { id: 'wireframe', label: 'Toggle wireframe', keys: ['X'] },
+    { id: 'grid', label: 'Toggle grid', keys: ['G'] },
+    { id: 'autoRotate', label: 'Toggle auto-rotate', keys: ['T'] },
+    { id: 'addToAssembly', label: 'Add to assembly', keys: ['Ctrl+Enter'] }
+  ];
+  var FIXED_KEYS = ['ArrowUp', 'ArrowDown', 'Backspace']; // hard-wired (list stepping, snap re-pick): not bindable
+  var MOD_NAMES = ['Ctrl', 'Alt', 'Shift', 'Meta', 'Control', 'AltGraph'];
+
+  function defaultBindings() {
+    var b = {};
+    KEY_ACTIONS.forEach(function (a) { b[a.id] = a.keys.slice(); });
+    return b;
+  }
+
+  // KeyboardEvent-like {key, ctrlKey, metaKey, altKey, shiftKey} -> combo string; null for a bare modifier key
+  function comboFromEvent(e) {
+    var k = e && e.key;
+    if (typeof k !== 'string' || !k || MOD_NAMES.indexOf(k) >= 0 || k === 'OS' || k === 'Dead' || k === 'Unidentified') return null;
+    k = k === ' ' ? 'Space' : k.length === 1 ? k.toUpperCase() : k;
+    return (e.ctrlKey || e.metaKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '') + k;
+  }
+
+  // any spelling/order of modifiers -> canonical combo, or null if invalid
+  function normalizeCombo(s) {
+    if (typeof s !== 'string') return null;
+    var m = /^((?:(?:Ctrl|Alt|Shift)\+)*)(.+)$/.exec(s);
+    if (!m) return null;
+    var key = m[2], mods = m[1];
+    if (key.length === 1) {
+      if (!/\S/.test(key)) return null;
+      key = key.toUpperCase();
+    } else if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key) || MOD_NAMES.indexOf(key) >= 0) return null;
+    return (/Ctrl/.test(mods) ? 'Ctrl+' : '') + (/Alt/.test(mods) ? 'Alt+' : '') + (/Shift/.test(mods) ? 'Shift+' : '') + key;
+  }
+
+  // id of another action using combo, '@fixed' for a hard-wired key, else null
+  function findConflict(bindings, id, combo) {
+    if (FIXED_KEYS.indexOf(combo) >= 0) return '@fixed';
+    for (var i = 0; i < KEY_ACTIONS.length; i++) {
+      var a = KEY_ACTIONS[i].id;
+      if (a !== id && bindings[a] && bindings[a].indexOf(combo) >= 0) return a;
+    }
+    return null;
+  }
+
+  // saved (anything, e.g. parsed localStorage) -> complete valid bindings. Unknown ids, bad entries, fixed keys and
+  // duplicates are dropped; a saved empty list means "cleared". Actions missing from saved keep their defaults, and those
+  // defaults win over a saved combo of another action (a stale override left from older defaults is dropped; if that empties
+  // its list the action falls back to its own default).
+  function mergeBindings(saved) {
+    var out = {}, taken = Object.create(null), reserved = Object.create(null), def = defaultBindings();
+    var has = saved && typeof saved === 'object' && !Array.isArray(saved);
+    function savedList(a) {
+      return has && Object.prototype.hasOwnProperty.call(saved, a.id) && Array.isArray(saved[a.id]) ? saved[a.id] : null;
+    }
+    function take(id, list, skip) {
+      var res = [];
+      list.forEach(function (c) {
+        c = normalizeCombo(c);
+        if (c && !taken[c] && !(skip && skip[c]) && FIXED_KEYS.indexOf(c) < 0) { taken[c] = true; res.push(c); }
+      });
+      return res;
+    }
+    KEY_ACTIONS.forEach(function (a) { if (!savedList(a)) def[a.id].forEach(function (c) { reserved[c] = true; }); });
+    KEY_ACTIONS.forEach(function (a) {
+      var s = savedList(a);
+      if (!s) return;
+      var list = take(a.id, s, reserved);
+      if (list.length || !s.length) out[a.id] = list;
+    });
+    KEY_ACTIONS.forEach(function (a) { if (!out[a.id]) out[a.id] = take(a.id, def[a.id]); });
+    return out;
+  }
+
+  // only the actions that differ from the defaults (what gets saved)
+  function bindingOverrides(bindings) {
+    var o = {};
+    KEY_ACTIONS.forEach(function (a) { if (!arraysEqual(bindings[a.id], a.keys)) o[a.id] = bindings[a.id].slice(); });
+    return o;
+  }
+
+  // combo -> action id or null. Shift+letter falls back to the bare letter binding (old code ignored Shift on W/E/S and Ctrl+Y).
+  function matchAction(bindings, combo) {
+    function look(c) {
+      for (var i = 0; i < KEY_ACTIONS.length; i++) {
+        var a = KEY_ACTIONS[i].id;
+        if (bindings[a] && bindings[a].indexOf(c) >= 0) return a;
+      }
+      return null;
+    }
+    var id = look(combo);
+    if (!id) { var m = /^(Ctrl\+)?Shift\+([A-Z])$/.exec(combo); if (m) id = look((m[1] || '') + m[2]); }
+    return id;
+  }
+
   return {
+    KEY_ACTIONS: KEY_ACTIONS,
+    FIXED_KEYS: FIXED_KEYS,
+    defaultBindings: defaultBindings,
+    comboFromEvent: comboFromEvent,
+    normalizeCombo: normalizeCombo,
+    findConflict: findConflict,
+    mergeBindings: mergeBindings,
+    bindingOverrides: bindingOverrides,
+    matchAction: matchAction,
     LIMITS: LIMITS,
     DEFAULT_COLOR: DEFAULT_COLOR,
     parseSTL: parseSTL,
