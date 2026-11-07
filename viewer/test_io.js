@@ -594,6 +594,66 @@ test('assembly JSON: forbidden ids are rejected', function () {
   assert.throws(function () { IO.parseAssemblyJSON(asmText({ instances: [{ part: 3, matrix: translation(0, 0, 0) }] })); }, /part id must be a non-empty string/);
 });
 
+var TWO = [{ part: 'beam5', matrix: translation(0, 0, 0) }, { part: 'gear8', matrix: translation(5, 0, 0) }];
+function dimPt(i, x) { return { inst: i, local: [x, 1.5, -2] }; }
+
+test('assembly JSON: dimensions round trip (distance and angle)', function () {
+  var dims = [{ type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)] }, { type: 'angle', pts: [dimPt(0, 3), dimPt(1, 4), dimPt(0, 5)] }];
+  var s = IO.serializeAssembly(TWO, [], dims);
+  assert.deepStrictEqual(JSON.parse(s).dimensions, dims);
+  var r = IO.parseAssemblyJSON(s, { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, dims);
+  assert.deepStrictEqual(r.warnings, []);
+  r.dimensions[0].pts[0].local[0] = 99;
+  assert.strictEqual(dims[0].pts[0].local[0], 1, 'parsed copy, not the input');
+  assert.strictEqual(JSON.parse(IO.serializeAssembly(TWO, [], [])).dimensions, undefined, 'no key without dimensions');
+});
+
+test('assembly JSON: an old file without dimensions loads with an empty list', function () {
+  var r = IO.parseAssemblyJSON(asmText({}), { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, []);
+  assert.deepStrictEqual(r.warnings, []);
+  assert.deepStrictEqual(IO.parseAssemblyJSON(asmText({ dimensions: null }), { knownIds: KNOWN }).dimensions, []);
+  var w = IO.parseAssemblyJSON(asmText({ dimensions: 'x' }), { knownIds: KNOWN });
+  assert.deepStrictEqual(w.dimensions, []);
+  assert.ok(/dimensions must be an array/.test(w.warnings[0]), w.warnings.join('|'));
+});
+
+test('assembly JSON: bad dimensions are dropped with a warning, good ones stay', function () {
+  var good = { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)] };
+  var nanLocal = { type: 'dist', pts: [dimPt(0, 1), { inst: 1, local: [0, null, 0] }] };
+  var bad = [
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(2, 2)] },            // index out of range
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(-1, 2)] },           // negative index
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(0.5, 2)] },          // fractional index
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2), dimPt(1, 3)] }, // 3 points for a distance
+    { type: 'angle', pts: [dimPt(0, 1), dimPt(1, 2)] },           // 2 points for an angle
+    { type: 'area', pts: [dimPt(0, 1), dimPt(1, 2)] },            // unknown type
+    nanLocal, null, 'x', { type: 'dist' }
+  ];
+  var r = IO.parseAssemblyJSON(asmText({ instances: TWO, dimensions: [bad[0]].concat([good], bad.slice(1)) }), { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, [good]);
+  assert.strictEqual(r.warnings.length, bad.length);
+  r.warnings.forEach(function (m) { assert.ok(/^Assembly JSON: dimension \d+: .*, dropped$/.test(m), m); });
+  assert.ok(/dimension 0: point 1: inst is not a valid instance index/.test(r.warnings[0]), r.warnings[0]);
+  assert.ok(/dimension 4: type "dist" needs exactly 2 points/.test(r.warnings[3]), r.warnings[3]);
+  assert.ok(/dimension 5: type "angle" needs exactly 3 points/.test(r.warnings[4]), r.warnings[4]);
+});
+
+test('assembly JSON: dimension indexes follow the instances that were kept (skipped instances shift them)', function () {
+  var insts = [{ part: 'nope', matrix: translation(0, 0, 0) }, { part: 'beam5', matrix: translation(1, 0, 0) }, { part: 'gear8', matrix: translation(2, 0, 0) }];
+  var r = IO.parseAssemblyJSON(asmText({ instances: insts, dimensions: [
+    { type: 'dist', pts: [dimPt(1, 1), dimPt(2, 2)] },
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(2, 2)] }] }), { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, [{ type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)] }]);
+  assert.ok(/dimension 1: refers to a skipped instance, dropped/.test(r.warnings[1]), r.warnings.join('|'));
+});
+
+test('assembly JSON: serialize rejects an invalid dimension', function () {
+  assert.throws(function () { IO.serializeAssembly(TWO, [], [{ type: 'dist', pts: [dimPt(0, 1), dimPt(2, 2)] }]); }, /serializeAssembly: dimension 0: point 1: inst is not a valid instance index/);
+  assert.throws(function () { IO.serializeAssembly(TWO, [], [{ type: 'angle', pts: [dimPt(0, 1), dimPt(1, 2)] }]); }, /needs exactly 3 points/);
+});
+
 test('meshesEqual: exact structural comparison', function () {
   var a = [boxMesh('#ff0000'), tri('#00ff00')], b = JSON.parse(JSON.stringify(a));
   assert.strictEqual(IO.meshesEqual(a, b), true);

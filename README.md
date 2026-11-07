@@ -1,7 +1,7 @@
 # LEGO Mindstorms EV3 parts - 3D models
 
 37 EV3 parts (beams, angular beams, axles, pegs, gears, wheel, motors, sensors, P-Brick) as STL / OBJ+MTL files and as a
-browser viewer with a small assembly editor (`viewer/viewer.html`, data in `viewer/models.js`): place parts, move/rotate
+browser app "EVE3 Edit" (viewer with a small assembly editor, `viewer/viewer.html`, data in `viewer/models.js`): place parts, move/rotate
 and vertex-snap them, import STL/OBJ, export the assembly as STL or OBJ+MTL, save/load it as JSON. Units mm, Z-up, one mesh
 per colour.
 
@@ -35,11 +35,14 @@ Assembly mode "Reset view" and "Frame all" frame the whole assembly and "Wirefra
 | Multi-select | Ctrl+click toggles, Shift+click marks the range from the last clicked row (in the Assembly list a group header counts as its instances; rows inside a collapsed sidebar category are skipped). Ctrl+click on a part in the 3D view toggles it too. **Ctrl + left-drag** on the 3D view (Assembly mode, from anywhere, also from a part) draws a translucent rubber band; on release every instance whose projected bounding box touches the rectangle is ADDED to the marks (no occlusion test; nothing inside = nothing changes; Esc during the drag cancels; Orbit and the gizmo are off for that drag; a Ctrl+click under 4 px still toggles). Shift + left-drag still pans via the orbit controls. Selection is not an undo step. Marked rows are highlighted; Esc clears the marks. Exactly one marked: the gizmo uses the part's own axes. Two or more marked: one gizmo at the centroid of their bounding-box centres, in world axes; Move/Rotate (W/E) and the snap toggles work as usual and a drag moves or rotates (about that centroid) ALL marked instances as ONE undo step; the gizmo is hidden during vertex snap. Delete removes all marked instances (one undo step) |
 | Move / rotate | gizmo on the selected part; "Move" (W) / "Rotate" (E). Hold **Alt** when you start the gizmo drag to copy: the original(s) stay, a copy (or copies, for a multi-selection) ends up at the dragged position and becomes the selection; one undo step |
 | Camera | left drag orbits, **middle button (wheel pressed) drag pans**, wheel zooms; the right button does nothing |
+| Context menu | a right click (no drag) in the 3D view (single view or any Four-view viewport) opens a menu that repeats the toolbar commands by section: Selection / Edit (Undo, Redo, Delete, Deselect, Add to assembly), Transform (Move, Rotate, Snap 15°, Snap, Snap vertex), Dimensions (Dim line, Dim angle), View (Frame all, Reset view, Wireframe, Grid + axes, Four view, Full screen, Auto-rotate) and File (Export STL, Export OBJ, Save JSON). Each item runs the toolbar button itself, shows its shortcut, a check mark when a toggle is on, and is greyed out when the button is disabled (or, for Assembly-only items, in Preview mode). A right click on an unmarked part selects it first; on empty space the selection stays. A right click in the Assembly list does the same for the row; in the part list only the Selection / Edit section shows. Esc, an outside click, scrolling, resizing or switching windows close it; Up/Down/Home/End move and Enter runs an item |
 | Four view | "Four view" (key 4), in Preview and Assembly mode: a 2x2 grid with Top (top left, looking down, +X right, +Y up), Perspective (top right, the normal orbit camera), Front (bottom left, from -Y, +X right, +Z up) and Left (bottom right, from -X looking along +X, +Z up). Top/Front/Left are orthographic: wheel zooms, middle drag pans, no rotation. Frame all / Reset view re-frame all four. Picking, Ctrl+click, Ctrl+drag box select, vertex snap and the gizmo work in every viewport (each viewport shows its own gizmo; a drag in the Top view moves X/Y only, ...). The ground grid is shown in Top and Perspective only. "Max" in a viewport corner (or a double-click on its label) maximizes that viewport over the whole 3D view and restores the 2x2 layout; the choice is remembered for the session. Auto-rotate turns the Perspective view only. Four view is not saved |
 | Full screen | "Full screen" (Alt+Enter) uses the browser full screen: header, side panels, status and footer are hidden and the 3D view fills the screen with an "Exit full screen" button (and the Four view controls) floating inside it. Esc or F11 leave it too (that Esc does not clear the selection); all shortcuts keep working |
 | Snap 15° | toggle for 15° rotation steps (default off; key A) |
 | Snap | toggle for the bounding-box snap (default off; key Z), see "Snap" below. The gizmo works in the part's local axes |
 | Snap vertex | "Snap vertex" or S (Assembly mode, at least 2 parts), see below |
+| Dim line | "Dim line" (Assembly mode, no default key): distance between 2 mesh vertices, see "Dimensions" below |
+| Dim angle | "Dim angle" (Assembly mode, no default key): angle between 3 mesh vertices, see "Dimensions" below |
 | Delete | "Delete" or Del removes the selected (marked) parts |
 | Undo / Redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z (also the buttons; 100 steps) |
 
@@ -52,6 +55,27 @@ A click picks the nearest of the 3 vertices of the clicked triangle, not the nea
 re-picks A, Esc (or S) cancels. A second click that hits nothing or only A shows "click a different part".
 
 With 2 or more instances marked the whole marked set moves: A must be picked on a marked part and B on an unmarked one, and every marked instance is translated by the same A-to-B delta (one undo step). A needs at least one unmarked part as the target.
+
+### Dimensions
+
+"Dim line" and "Dim angle" (toolbar, next to Snap vertex; Assembly mode only; no keyboard shortcut) put measurements on the
+parts. They are toggles, mutually exclusive with each other and with Snap vertex; while one is armed the gizmo is hidden
+and the cursor is a crosshair (orbit works), and the status line names the point to click next.
+- **Dim line**: click 2 vertices (they may belong to different parts); the distance is shown in mm (1 decimal) on a
+  magenta line with end ticks and a label at the middle.
+- **Dim angle**: click the end of the first arm, the apex, then the end of the second arm; the angle at the apex between the
+  two arms is shown in degrees (1 decimal) with both arms and an arc.
+
+A click picks the nearest vertex of the clicked triangle, as in Snap vertex. A dimension is created after its last point
+(one undo step) and the tool stays armed for the next one; Esc (or the button again) leaves it, Backspace restarts the
+current dimension. The "Dimensions" list in the Assembly panel shows one row per dimension (`Dim 1: 25.4 mm`, `Dim 2: 90.0°`,
+live while you drag) with a × button that deletes it (one undo step).
+
+Dimensions are attached to the picked vertices of their parts, so they follow the parts when you move or rotate them (also
+Alt-drag copies: the dimension stays with the original). A dimension disappears when one of its parts is deleted and comes
+back with undo. They are in undo/redo and in Save/Load JSON, are hidden in Preview mode, and are NOT part of the STL/OBJ
+export. Labels keep a constant size on screen in every view (also the orthographic Four-view viewports). The dimension tools are
+not remembered between runs.
 
 ### Import
 
@@ -88,11 +112,14 @@ Selecting parts in Assembly mode also re-targets the orbit to the centre of the 
 "Collapse all" closes every category (each category keeps its open/closed state while you use the page). "+ Category" creates
 your own category (name: 1 to 40 characters, unique among all categories ignoring case); custom categories show a pencil
 (rename) and a × (delete, after a confirm; their parts go back to their original category) on the category row and stay
-listed when empty. Mark parts (Ctrl/Shift+click) and pick a category in "Move marked to..." to move ALL marked parts, built-in
+listed when empty. Every other category except Misc (built-in ones and those from imported parts or a loaded JSON) has a
+× too ("Remove category", after a confirm): all its parts move to Misc (via the override, so "(original category)" brings
+them back) and the emptied category disappears from the list. Mark parts (Ctrl/Shift+click) and pick a category in "Move marked to..." to move ALL marked parts, built-in
 or imported, there; "(original category)" in that list puts them back. The part's own category is never changed, only an
 override is stored. Custom categories and overrides are kept in localStorage (`eve3.cats`; corrupt data and unknown part ids
 or categories are ignored). They are a viewer preference: Save/Load JSON does not contain them. Search matches the
 current category name too.
+The viewer also remembers its UI state between runs in one localStorage key, `eve3.ui` (written when the page is closed or hidden, validated on load): the Wireframe, Auto-rotate, Grid, Four view and both Snap toggles, the Move/Rotate gizmo mode, which categories and Assembly groups are open, and the import scale and unit preset (Full screen, Snap vertex, the Dim line / Dim angle tools and the Preview/Assembly mode are not kept).
 
 ### Snap
 
@@ -134,11 +161,19 @@ matrices (16 finite numbers, invertible) and embedded meshes (finite numbers, fa
 
 Instances with an unknown part id are skipped and reported. The whole load is one undo step.
 
+Dimensions are saved in an optional `dimensions` array (old files without it load as before):
+
+    "dimensions": [{"type": "dist" | "angle", "pts": [{"inst": <index in "instances">, "local": [x, y, z]}, ...]}]
+
+`dist` has 2 points, `angle` 3 (arm end, apex, arm end). `local` is the vertex in the part's own coordinates and `inst` the
+position of its instance in the saved `instances` array (instances get new ids on load). Invalid entries (wrong point count,
+bad index, instance that was skipped) are dropped with a warning; loading never fails because of them.
+
 ### Tests
 
     node viewer/test_io.js
 
-Unit tests for `viewer/io.js` (parsers, export, JSON, keyboard bindings); prints `ALL TESTS PASSED (52 tests)` and exits 0.
+Unit tests for `viewer/io.js` (parsers, export, JSON, keyboard bindings); prints `ALL TESTS PASSED (57 tests)` and exits 0.
 
 ### Smoke checklist (manual, 2 minutes)
 
@@ -147,6 +182,7 @@ Unit tests for `viewer/io.js` (parsers, export, JSON, keyboard bindings); prints
 - [ ] Move a part (W) and rotate it (E) with the gizmo; orbiting still works when not on the gizmo
 - [ ] Snap vertex (S): click a vertex on beam A, then on beam B; A jumps onto B
 - [ ] Ctrl+Z undoes the snap and the moves, Ctrl+Y redoes them
+- [ ] Dim line: click a vertex on each of two parts: a magenta line with a mm label and a row in "Dimensions"; move a part: the value follows; Dim angle on 3 vertices of a box corner reads 90.0°; Esc leaves the tool; undo removes the dimension; Save JSON + Load JSON keeps it
 - [ ] Delete a part, undo brings it back
 - [ ] Import a STL and an OBJ(+MTL): they appear under "Imported", preview, can be added and moved
 - [ ] Remove an imported part with ×, confirm; undo brings back the part and its instances

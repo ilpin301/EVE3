@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EV3 Part Viewer</title>
+<title>EVE3 Edit</title>
 <style>
 :root{
   --bg:#f4f5f7; --panel:#ffffff; --panel2:#eceef2; --text:#1d2330; --muted:#5d6676;
@@ -35,6 +35,11 @@ aside{width:280px;flex:none;background:var(--panel);border-right:1px solid var(-
 aside#asm{width:240px;border-right:0;border-left:1px solid var(--border);padding:8px}
 #asm h2{font-size:15px;margin:0}
 #asmList{flex:1;overflow:auto;margin:6px 0}
+#dimBox{margin:0 0 6px}
+#dimBox h3{font-size:13px;margin:0 0 2px;color:var(--muted)}
+#dimList{max-height:20vh;overflow:auto}
+.dimrow{display:flex;align-items:center;padding:1px 0 1px 8px}
+.dimrow span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #search{margin:8px;padding:6px 8px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px}
 #list{flex:1;overflow:auto;padding:0 8px 8px}
 #importBox{padding:8px 8px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -87,6 +92,15 @@ body.fs header,body.fs aside,body.fs #addRow,body.fs #info,body.fs footer{displa
 aside#asm.drop{outline:2px solid var(--accent);outline-offset:-2px}
 #rband{position:absolute;z-index:2;pointer-events:none;border:1px solid var(--accent);background:var(--accent);opacity:.3}
 #rband[hidden]{display:none}
+#ctxMenu{position:fixed;z-index:20;min-width:210px;max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);overflow-y:auto;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 24px rgba(0,0,0,.35);outline:none;user-select:none}
+#ctxMenu .cmh{font-size:11px;color:var(--muted);padding:6px 8px 2px;text-transform:uppercase;letter-spacing:.04em}
+#ctxMenu .cmg+.cmg{border-top:1px solid var(--border);margin-top:4px}
+#ctxMenu .cmi{display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;outline:none}
+#ctxMenu .cmi:hover,#ctxMenu .cmi:focus{background:var(--accent);color:var(--accent-text)}
+#ctxMenu .cmi[aria-disabled="true"]{opacity:.45;cursor:default;background:transparent;color:inherit}
+#ctxMenu .cmc{width:1.1em;flex:none;text-align:center}
+#ctxMenu .cml{flex:1;white-space:nowrap}
+#ctxMenu .cmk{margin-left:16px;font-size:12px;opacity:.7}
 #view canvas{display:block;width:100%;height:100%}
 #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--err);font-size:16px}
 #addRow{padding:6px 16px;background:var(--panel);border-top:1px solid var(--border);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -105,7 +119,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 </head>
 <body>
 <header>
-  <h1>EV3 Part Viewer</h1>
+  <h1>EVE3 Edit</h1>
   <div class="toolbar seg" role="group" aria-label="Mode">
     <button id="bPrev" aria-pressed="true">Preview</button>
     <button id="bAsm" aria-pressed="false">Assembly</button>
@@ -125,6 +139,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     <button id="bSnapR" aria-pressed="false">Snap 15°</button>
     <button id="bSnapT" aria-pressed="false">Snap</button>
     <button id="bSnapV" aria-pressed="false" title="Snap vertex A onto vertex B (S)">Snap vertex</button>
+    <button id="bDimL" aria-pressed="false" title="Dimension line: click 2 vertices (distance in mm)">Dim line</button>
+    <button id="bDimA" aria-pressed="false" title="Dimension angle: click arm end, apex, arm end">Dim angle</button>
   </div>
   <button id="bFull" class="spacer" aria-pressed="false">Full screen</button>
   <button id="bSettings">Settings</button>
@@ -155,6 +171,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     <h2>Assembly</h2>
     <div id="asmCount" class="muted">0 instances</div>
     <div id="asmList"></div>
+    <div id="dimBox" hidden><h3>Dimensions</h3><div id="dimList"></div></div>
     <div class="toolbar">
       <button id="bDel" disabled>Delete</button>
       <button id="bFrameAll">Frame all</button>
@@ -277,7 +294,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   scene.add(helpers);
   var snapMarkers = new THREE.Group(); // vertex-snap markers: not in `built`, so never raycast or exported
   scene.add(snapMarkers);
-  var snapSt = 'off', snapA = null, snapB = null, lastSnapRec = null; // vertex snap: off | pickA | pickB
+  var snapSt = 'off', snapA = null, snapB = null, lastSnapRec = null; // vertex snap: off | pickA | pickB; 'dim' = a dimension tool is armed (dimTool, dimPts)
+  // dimensions: dims = [{id, type: 'dist' | 'angle', pts: [{uid, local: [x, y, z]}]}], local = vertex in the instance's own (part) coordinates, so the
+  // world point is instance.matrix * local and the dimension follows the part. dimGroup (lines + label sprites) is not in `built`: never picked/exported/framed.
+  var dims = [], dimCounter = 0, dimTool = null, dimPts = [], dimEls = {};
+  var dimGroup = new THREE.Group();
+  scene.add(dimGroup);
 
   // assembly state
   var userParts = [];
@@ -394,7 +416,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     add('span', tris + ' triangles', 'muted');
     if (p.approx) add('span', 'approximate shape', 'badge');
     if (p.user) add('span', 'imported', 'badge');
-    document.title = 'EV3 Part Viewer - ' + p.name;
+    document.title = 'EVE3 Edit - ' + p.name;
     var s = markSel(); if (s) s.scrollIntoView({block:'nearest'});
     $('bAdd').disabled = !current;
   }
@@ -538,6 +560,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (bbSnap && rot && !e.target.rotationSnap) snapRotation(o);
     if (grp) groupApply(); else syncMatrixFromObj(selInst());
     if (bbSnap && !rot) bbSnapMove(snapMoved(), true);
+    rebuildDims(); // dimensions follow the part live
   });
   onTC('mouseUp', function(e){
     clearBbHi(); clearGhosts();
@@ -558,6 +581,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     // tolerance: decompose/compose round trip after undo can differ by an ulp
     for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { if (cp) dropCopies([{i: i, m: s}]); else commit(); return; }
   });
+  onTC('mouseUp', function(){ rebuildDims(); }); // after the handler above: its end-of-drag snap (rotate) may have moved parts once more
   function setGizmoMode(m){
     allTC.forEach(function(t){ t.setMode(m); });
     $('bMove').setAttribute('aria-pressed', m === 'translate');
@@ -588,6 +612,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 
   // the ONLY place instance groups are created/disposed
   function rebuildInstances(){
+    dims = dims.filter(function(d){ return d.pts.every(function(p){ return findInst(p.uid) >= 0; }); }); // a dimension dies with its part
     beforeRebuild();
     built.forEach(disposeObj); built = [];
     instances.forEach(function(i){
@@ -601,6 +626,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     });
     refreshSel(); // drops marks that are gone, refreshes list + highlight on the new groups
     afterRebuild();
+    renderDimList(); rebuildDims();
   }
 
   // bboxes from vertex data + instance matrix, so they work in Preview mode too (no groups there)
@@ -673,7 +699,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     return {
       instances: instances.map(function(i){ return {uid: i.uid, partId: i.partId, matrix16: i.matrix.elements.slice()}; }),
       userPartIds: userParts.map(function(p){ return p.id; }),
-      uidCounter: uidCounter
+      uidCounter: uidCounter,
+      dims: dims.map(function(d){ return {id: d.id, type: d.type, pts: d.pts.map(function(p){ return {uid: p.uid, local: p.local.slice()}; })}; }),
+      dimCounter: dimCounter
     };
   }
   function updateUndoButtons(){
@@ -722,6 +750,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
         instances.push({uid: r.uid, partId: r.partId, matrix: new THREE.Matrix4().fromArray(r.matrix16), obj: null});
       });
       uidCounter = Math.max(uidCounter, s.uidCounter || 0); // uids never repeat
+      dims = (s.dims || []).map(function(d){ return {id: d.id, type: d.type, pts: d.pts.map(function(p){ return {uid: p.uid, local: p.local.slice()}; })}; });
+      dimCounter = Math.max(dimCounter, s.dimCounter || 0);
       rebuildInstances(); // clears selUid if gone, refreshes the list; no groups in Preview mode
     } finally { restoring = false; }
   }
@@ -777,6 +807,11 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     return raycaster.intersectObjects(objs, true);
   }
   function uidOf(o){ for (; o; o = o.parent) if (o.userData.uid !== undefined) return o.userData.uid; return null; }
+  function hitUid(x, y){ // the instance under the cursor, or null (also in Preview mode / while the gizmo is busy); selects nothing
+    if (mode !== 'assembly' || tcBusy()) return null;
+    var hits = rayHits(x, y, built);
+    return hits && hits.length ? uidOf(hits[0].object) : null;
+  }
   function pickAt(x, y, add){ // add (Ctrl+click) toggles the hit part in the marked set; a miss then changes nothing
     if (mode !== 'assembly') return null;
     if (tcBusy()) return null;
@@ -895,15 +930,140 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
   function snapExit(){
     if (snapSt === 'off') return;
-    snapSt = 'off'; snapA = snapB = null; clearMarkers();
+    snapSt = 'off'; snapA = snapB = null; dimTool = null; dimPts = []; clearMarkers();
     setTCEnabled(true);
     view.style.cursor = '';
-    $('bSnapV').setAttribute('aria-pressed', false);
+    ['bSnapV', 'bDimL', 'bDimA'].forEach(function(id){ $(id).setAttribute('aria-pressed', false); });
     setStatus('');
     refreshSel(); // re-attach the gizmo
   }
-  function snapRepick(){ snapSt = 'pickA'; snapA = snapB = null; clearMarkers(); setStatus(snapAMsg()); }
+  function snapRepick(){
+    if (snapSt === 'dim') { dimPts = []; clearMarkers(); setStatus(dimMsg()); return; }
+    snapSt = 'pickA'; snapA = snapB = null; clearMarkers(); setStatus(snapAMsg());
+  }
+
+  // dimension tools ("Dim line" 2 vertices, "Dim angle" 3: arm end, apex, arm end): the vertex-snap machinery with snapSt = 'dim'
+  // (gizmo off, orbit on, Esc / Backspace / snapExit all shared); the tool stays armed after each dimension until toggled off or Esc
+  var DIM_MARK = [0xff2020, 0x20c020, 0x2080ff], DIM_COLOR = 0xd000d0, DIM_LABEL_PX = 22;
+  var DIM_STEPS = {dist: ['click the first vertex (1/2)', 'click the second vertex (2/2)'],
+    angle: ['click the end of the first arm (1/3)', 'click the apex (2/3)', 'click the end of the second arm (3/3)']};
+  function dimMsg(){ return (dimTool === 'dist' ? 'Dim line: ' : 'Dim angle: ') + DIM_STEPS[dimTool][dimPts.length] + ' - Esc cancels, Backspace restarts'; }
+  function dimStart(type){
+    var again = snapSt === 'dim' && dimTool === type;
+    snapExit(); // cancels vertex snap or the other dimension tool, or this one (the button toggles)
+    if (again) return;
+    if (mode !== 'assembly') { setStatus('Dimension: switch to Assembly mode first'); return; }
+    if (tcActive().some(function(t){ return t.dragging; })) return; // disabling mid-drag would swallow the gizmo's pointerup
+    if (!instances.length) { setStatus('Dimension: add a part first'); return; }
+    snapSt = 'dim'; dimTool = type; dimPts = []; clearMarkers();
+    setTCEnabled(false);
+    refreshSel(); // gate in setMarks detaches the gizmo
+    view.style.cursor = 'crosshair';
+    $(type === 'dist' ? 'bDimL' : 'bDimA').setAttribute('aria-pressed', true);
+    setStatus(dimMsg());
+  }
+  function dimClick(x, y){
+    var p = snapPick(x, y, built), k = p ? findInst(p.uid) : -1, g = k >= 0 ? instances[k].obj : null;
+    if (!g) { setStatus(dimMsg()); return; }
+    if (dimPts.some(function(q){ return q.w.distanceTo(p.w) < 1e-6; })) { setStatus('Dimension: that point is already picked, click another vertex'); return; }
+    var l = new THREE.Vector3().fromBufferAttribute(g.children[p.mesh].geometry.attributes.position, p.vi); // the vertex in part coordinates
+    dimPts.push({uid: p.uid, local: l.toArray().map(function(c){ return Math.round(c * 1e4) / 1e4; }), w: p.w});
+    addMarker(p.w, DIM_MARK[dimPts.length - 1]);
+    if (dimPts.length < DIM_STEPS[dimTool].length) { setStatus(dimMsg()); return; }
+    var d = {id: ++dimCounter, type: dimTool, pts: dimPts.map(function(q){ return {uid: q.uid, local: q.local}; })};
+    dims.push(d); dimPts = []; clearMarkers();
+    renderDimList(); rebuildDims(); commit();
+    setStatus('Dim ' + d.id + ': ' + dimCalc(d).text + ' - ' + dimMsg());
+  }
+  // world points + value of a dimension; null when one of its parts is gone
+  function dimCalc(d){
+    var W = d.pts.map(function(p){ var k = findInst(p.uid); return k < 0 ? null : new THREE.Vector3(p.local[0], p.local[1], p.local[2]).applyMatrix4(instances[k].matrix); });
+    if (W.some(function(w){ return !w; })) return null;
+    if (d.type === 'dist') return {W: W, text: W[0].distanceTo(W[1]).toFixed(1) + ' mm'};
+    return {W: W, text: (W[0].clone().sub(W[1]).angleTo(W[2].clone().sub(W[1])) * 180 / Math.PI).toFixed(1) + '°'};
+  }
+  function dimPerp(u){ return u.clone().cross(Math.abs(u.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).normalize(); }
+  // text on a light pill as a sprite; sizeAttenuation off + a per-camera scale in onBeforeRender keeps it LABEL_PX tall in every viewport
+  // (perspective and orthographic): the sprite shader maps scale s to s * P[1][1] / 2 of the viewport height in both camera types
+  function dimLabel(text, at){
+    var c = document.createElement('canvas'), x = c.getContext('2d'), f = '600 28px system-ui, "Segoe UI", sans-serif';
+    x.font = f; c.width = Math.ceil(x.measureText(text).width) + 24; c.height = 44;
+    x.font = f; x.textBaseline = 'middle'; x.textAlign = 'center';
+    x.fillStyle = '#fff6b8'; x.strokeStyle = '#a000a0'; x.lineWidth = 3;
+    x.beginPath(); x.moveTo(22, 2); x.lineTo(c.width - 22, 2); x.arc(c.width - 22, 22, 20, -Math.PI / 2, Math.PI / 2); x.lineTo(22, 42); x.arc(22, 22, 20, Math.PI / 2, -Math.PI / 2); x.closePath(); x.fill(); x.stroke();
+    x.fillStyle = '#1d2330'; x.fillText(text, c.width / 2, 23);
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true}));
+    s.position.copy(at); s.renderOrder = 1000; s.frustumCulled = false; s.userData.aspect = c.width / c.height;
+    var vp = new THREE.Vector4();
+    s.onBeforeRender = function(r, sc, cam){
+      r.getViewport(vp);
+      var h = 2 * DIM_LABEL_PX / (vp.w || 1) / cam.projectionMatrix.elements[5];
+      this.scale.set(h * this.userData.aspect, h, 1); this.updateMatrixWorld(true);
+    };
+    return s;
+  }
+  function clearDimGroup(){
+    while (dimGroup.children.length) {
+      var o = dimGroup.children.pop();
+      if (!o.isSprite) o.geometry.dispose(); // all sprites share one static geometry
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  }
+  // rebuilt (cheap) on every instance change/move; hidden in Preview
+  function rebuildDims(){
+    clearDimGroup();
+    dimGroup.visible = mode === 'assembly';
+    if (!dimGroup.visible) return;
+    dims.forEach(function(d){
+      var c = dimCalc(d); if (!c) return;
+      var W = c.W, seg = [], at = new THREE.Vector3();
+      function line(p, q){ seg.push(p.x, p.y, p.z, q.x, q.y, q.z); }
+      if (d.type === 'dist') {
+        var dir = W[1].clone().sub(W[0]), L = dir.length(), h = Math.min(3, L * 0.08);
+        line(W[0], W[1]);
+        if (L > 1e-9) {
+          dir.divideScalar(L);
+          var e1 = dimPerp(dir).multiplyScalar(h), e2 = dir.clone().cross(e1).normalize().multiplyScalar(h);
+          W.forEach(function(p){ line(p.clone().sub(e1), p.clone().add(e1)); line(p.clone().sub(e2), p.clone().add(e2)); }); // end ticks
+        }
+        at.copy(W[0]).add(W[1]).multiplyScalar(0.5);
+      } else {
+        var P = W[1], a = W[0].clone().sub(P), b = W[2].clone().sub(P), la = a.length(), lb = b.length();
+        line(P, W[0]); line(P, W[2]);
+        at.copy(P);
+        if (la > 1e-9 && lb > 1e-9) { // arc between the arms at 0.4 x the shorter arm; the label sits just outside its middle
+          var u = a.divideScalar(la), bn = b.divideScalar(lb), th = u.angleTo(bn), w = bn.clone().addScaledVector(u, -u.dot(bn));
+          if (w.lengthSq() < 1e-12) w = dimPerp(u); else w.normalize();
+          var r = 0.4 * Math.min(la, lb), prev = P.clone().addScaledVector(u, r);
+          for (var s = 1; s <= 24; s++) {
+            var t = th * s / 24, q = P.clone().addScaledVector(u, r * Math.cos(t)).addScaledVector(w, r * Math.sin(t));
+            line(prev, q); prev = q;
+          }
+          at.addScaledVector(u, 1.25 * r * Math.cos(th / 2)).addScaledVector(w, 1.25 * r * Math.sin(th / 2));
+        }
+      }
+      var g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+      var ln = new THREE.LineSegments(g, new THREE.LineBasicMaterial({color: DIM_COLOR, depthTest: false, transparent: true}));
+      ln.renderOrder = 997;
+      dimGroup.add(ln, dimLabel(c.text, at));
+      if (dimEls[d.id]) dimEls[d.id].textContent = 'Dim ' + d.id + ': ' + c.text; // list row follows live
+    });
+  }
+  function renderDimList(){
+    var L = $('dimList'); L.textContent = ''; dimEls = {};
+    dims.forEach(function(d){
+      var c = dimCalc(d), row = document.createElement('div'), t = document.createElement('span'), x = document.createElement('button');
+      row.className = 'dimrow'; t.textContent = 'Dim ' + d.id + ': ' + (c ? c.text : '?'); dimEls[d.id] = t;
+      x.className = 'xbtn'; x.textContent = '×'; x.title = 'Delete dimension'; x.setAttribute('aria-label', 'Delete dimension ' + d.id);
+      x.onclick = function(){ dims = dims.filter(function(q){ return q !== d; }); renderDimList(); rebuildDims(); commit(); };
+      row.appendChild(t); row.appendChild(x); L.appendChild(row);
+    });
+    $('dimBox').hidden = !dims.length;
+  }
   function snapClick(x, y){
+    if (snapSt === 'dim') { dimClick(x, y); return; }
     if (snapSt === 'pickA') {
       var a = snapPick(x, y, built.filter(function(g){ return marks.length < 2 || marks.indexOf(g.userData.uid) >= 0; }));
       if (!a) { setStatus(snapAMsg()); return; }
@@ -925,6 +1085,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (j >= 0 && instances[j].obj) { instances[j].obj.position.add(d); syncMatrixFromObj(instances[j]); }
     });
     inst.obj.updateMatrixWorld(true);
+    rebuildDims();
     var m = inst.obj.children[A.mesh];
     var after = new THREE.Vector3().fromBufferAttribute(m.geometry.attributes.position, A.vi).applyMatrix4(m.matrixWorld);
     lastSnapRec = {uidA: A.uid, uidB: B.uid, vAbefore: A.w.toArray(), vB: B.w.toArray(), vAafter: after.toArray()};
@@ -1043,7 +1204,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   // JSON save/load: instances reference parts by id; ALL user part definitions are embedded
   function hasOwn(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   function assemblyJSON(){
-    return EVEIO.serializeAssembly(instances.map(function(i){ return {part: i.partId, matrix: Array.from(i.matrix.elements)}; }), userParts);
+    var at = {}; // uid -> index in the saved instances (uids are new on load)
+    instances.forEach(function(i, k){ at[i.uid] = k; });
+    var dd = dims.filter(function(d){ return d.pts.every(function(p){ return p.uid in at; }); }).map(function(d){
+      return {type: d.type, pts: d.pts.map(function(p){ return {inst: at[p.uid], local: p.local.slice()}; })};
+    });
+    return EVEIO.serializeAssembly(instances.map(function(i){ return {part: i.partId, matrix: Array.from(i.matrix.elements)}; }), userParts, dd);
   }
   function saveJSON(){
     snapExit();
@@ -1093,6 +1259,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     }
     add.forEach(function(p){ delete removedParts[p.id]; userParts.push(p); });
     instances = recs.map(function(x){ return {uid: ++uidCounter, partId: x.partId, matrix: new THREE.Matrix4().fromArray(x.m), obj: null}; });
+    dims = r.dimensions.map(function(d){ return {id: ++dimCounter, type: d.type, pts: d.pts.map(function(p){ return {uid: instances[p.inst].uid, local: p.local}; })}; });
     marks = []; anchorKey = null;
     onLibraryChanged();
     rebuildInstances();
@@ -1103,8 +1270,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     renamed.forEach(function(t){ importNote('part id clash with different geometry, renamed: ' + t); });
     setStatus('Loaded ' + instances.length + ' parts' +
       (r.skipped.length ? ' (' + r.skipped.length + ' skipped: unknown part id ' + skippedIds.join(', ') + ')' : '') +
+      (dims.length ? ', ' + dims.length + ' dimension(s)' : '') +
       (add.length ? ', ' + add.length + ' part(s) added to the library' : ''));
-    return {ok: true, loaded: instances.length, skipped: r.skipped, added: add.map(function(p){ return p.id; }), renamed: renamed, warnings: r.warnings};
+    return {ok: true, loaded: instances.length, dimensions: dims.length, skipped: r.skipped, added: add.map(function(p){ return p.id; }), renamed: renamed, warnings: r.warnings};
   }
 
   // sidebar
@@ -1114,6 +1282,24 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   // user categories: catCustom = names of the user's own categories (listed even when empty); catOver = partId -> category override
   // (the part's own p.category is never touched, so "original" is always known); both persist in localStorage
   var CATS_STORE = 'eve3.cats', catCustom = [], catOver = Object.create(null), catOpen = {};
+  // UI state saved on close, restored on start: ONE key, every field validated, garbage ignored. catOpen / collapsed (keyed by category name / part id) load here, before the first buildSidebar
+  var UI_STORE = 'eve3.ui', uiReady = false;
+  var uiSaved = (function(){
+    var o = null, r = {};
+    try { o = JSON.parse(localStorage.getItem(UI_STORE)); } catch (e) {}
+    if (!o || typeof o !== 'object') return r;
+    ['wire', 'rot', 'grid', 'four', 'snapR', 'snapT'].forEach(function(k){ if (typeof o[k] === 'boolean') r[k] = o[k]; });
+    if (o.gizmo === 'translate' || o.gizmo === 'rotate') r.gizmo = o.gizmo;
+    ['cats', 'asm'].forEach(function(k){
+      if (!o[k] || typeof o[k] !== 'object') return;
+      r[k] = {}; Object.keys(o[k]).forEach(function(n){ if (typeof o[k][n] === 'boolean') r[k][n] = o[k][n]; });
+    });
+    if (typeof o.scale === 'number' && isFinite(o.scale) && o.scale > 0) r.scale = o.scale;
+    if (typeof o.preset === 'string') r.preset = o.preset;
+    return r;
+  })();
+  if (uiSaved.cats) catOpen = uiSaved.cats;
+  if (uiSaved.asm) collapsed = uiSaved.asm;
   function catOf(p){ return catOver[p.id] || p.category; }
   function allCats(){
     var c = CATS.slice();
@@ -1162,6 +1348,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     catCustom.splice(catCustom.indexOf(c), 1); delete catOpen[c];
     saveCats(); buildSidebar();
   }
+  // built-in / imported category: its parts move to 'Misc' via the override map; the empty category then vanishes from buildSidebar
+  function removeCat(c){
+    var ps = library().filter(function(p){ return catOf(p) === c; });
+    if (!confirm('Remove category "' + c + '"?' + (ps.length ? ' Its ' + ps.length + ' part(s) move to "Misc" (select them and use "Move marked to... > (original category)" to bring them back).' : ''))) return;
+    ps.forEach(function(p){ if (p.category === 'Misc') delete catOver[p.id]; else catOver[p.id] = 'Misc'; });
+    catOpen['Misc'] = true; saveCats(); buildSidebar(); delete catOpen[c];
+  }
   // idempotent: rebuilds #list + items, keeps search filter, each category's open state (also across rebuilds) and the selection highlight
   function buildSidebar(){
     Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ catOpen[d.dataset.cat] = d.open; });
@@ -1174,6 +1367,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       var det = document.createElement('details'); det.dataset.cat = c; det.open = catOpen[c] !== false;
       var sum = document.createElement('summary'); sum.appendChild(document.createTextNode(c));
       if (mine) { sum.appendChild(catBtn('✎', 'Rename category', function(){ renameCat(c); })); sum.appendChild(catBtn('×', 'Delete category', function(){ deleteCat(c); })); }
+      else if (c !== 'Misc') sum.appendChild(catBtn('×', 'Remove category', function(){ removeCat(c); }));
       det.appendChild(sum);
       ps.forEach(function(p){
         var b = document.createElement('button'); b.className = 'item'; b.textContent = p.name; b.dataset.id = p.id;
@@ -1438,6 +1632,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   $('setResetAll').onclick =function(){ capId = null; bindings = EVEIO.mergeBindings(null); setMsg('All shortcuts reset.'); saveKeys(); };
 
   function onKey(e){
+    if (menuEl) { menuKey(e); return; } // context menu open: only its own keys act
     if (rb) { if (e.key === 'Escape') { e.preventDefault(); rbEnd(false); } return; } // box select in progress: Esc cancels, nothing else acts
     if (!$('setBack').hidden) { settingsKey(e); return; } // dialog open: no viewer shortcuts, whatever has focus
     var t = e.target && e.target.tagName;
@@ -1470,6 +1665,90 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     }
   }
   window.addEventListener('keydown', onKey);
+
+  // right-click context menu: the toolbar commands grouped by section. Every item clicks the real button (or runs the real action), so
+  // enabled state, toggles and side effects are exactly the toolbar's; asm = Assembly-only (shown disabled in Preview). Built on open.
+  var CM = [
+    ['Selection / Edit', [{id: 'bUndo'}, {id: 'bRedo'}, {id: 'bDel', asm: 1}, {label: 'Deselect', act: 'deselect'}, {id: 'bAdd'}]],
+    ['Transform', [{id: 'bMove', asm: 1}, {id: 'bRotG', asm: 1}, {id: 'bSnapR', asm: 1}, {id: 'bSnapT', asm: 1, label: 'Snap (bounding box)'}, {id: 'bSnapV', asm: 1}]],
+    ['Dimensions', [{id: 'bDimL', asm: 1}, {id: 'bDimA', asm: 1}]],
+    ['View', [{id: 'bFrameAll', asm: 1}, {id: 'bReset'}, {id: 'bWire'}, {id: 'bGrid'}, {id: 'bFour'}, {id: 'bFull'}, {id: 'bRot'}]],
+    ['File', [{id: 'bExpSTL'}, {id: 'bExpOBJ'}, {id: 'bSaveJSON'}]]
+  ];
+  var menuEl = null, menuPrev = null, rcDown = null;
+  function closeMenu(){
+    if (!menuEl) return;
+    menuEl.remove(); menuEl = null;
+    document.removeEventListener('pointerdown', menuOutside, true); document.removeEventListener('wheel', menuOutside, true);
+    document.removeEventListener('scroll', menuOutside, true);
+    window.removeEventListener('resize', closeMenu); window.removeEventListener('blur', closeMenu);
+    var p = menuPrev; menuPrev = null;
+    try { if (p && p.isConnected && p.focus) p.focus(); } catch (e) {}
+  }
+  function menuOutside(e){ if (menuEl && !(e.target instanceof Node && menuEl.contains(e.target))) closeMenu(); }
+  function menuKey(e){
+    var its = Array.prototype.filter.call(menuEl.querySelectorAll('.cmi'), function(i){ return i.getAttribute('aria-disabled') !== 'true'; });
+    var i = its.indexOf(document.activeElement), n = its.length, k = e.key;
+    if (k === 'Escape' || k === 'Tab') { e.preventDefault(); closeMenu(); }
+    else if ((k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') && n) {
+      e.preventDefault();
+      its[k === 'Home' ? 0 : k === 'End' ? n - 1 : k === 'ArrowDown' ? (i + 1) % n : i < 0 ? n - 1 : (i + n - 1) % n].focus();
+    } else if ((k === 'Enter' || k === ' ') && i >= 0) { e.preventDefault(); its[i].click(); }
+  }
+  function openMenu(x, y, only){ // only = section titles to show (default all)
+    closeMenu();
+    var m = document.createElement('div');
+    m.id = 'ctxMenu'; m.tabIndex = -1; m.setAttribute('role', 'menu'); m.setAttribute('aria-label', 'Commands');
+    m.oncontextmenu = function(e){ e.preventDefault(); };
+    CM.forEach(function(sec){
+      if (only && only.indexOf(sec[0]) < 0) return;
+      var g = document.createElement('div'), h = document.createElement('div');
+      g.className = 'cmg'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', sec[0]);
+      h.className = 'cmh'; h.textContent = sec[0]; h.setAttribute('aria-hidden', 'true'); g.appendChild(h);
+      sec[1].forEach(function(it){
+        var b = it.id ? $(it.id) : null, a = it.act || (TITLES[it.id] && TITLES[it.id][0]), ks = a && bindings[a], key = ks && ks.length ? ks[0].replace('Escape', 'Esc') : '';
+        var pr = b ? b.getAttribute('aria-pressed') : null, off = (b && b.disabled) || (it.asm && mode !== 'assembly');
+        var d = document.createElement('div'), c = document.createElement('span'), l = document.createElement('span'), s = document.createElement('span');
+        d.className = 'cmi'; d.tabIndex = -1; d.setAttribute('role', pr !== null ? 'menuitemcheckbox' : 'menuitem');
+        if (pr !== null) d.setAttribute('aria-checked', pr);
+        if (off) d.setAttribute('aria-disabled', 'true');
+        c.className = 'cmc'; c.textContent = pr === 'true' ? '✓' : '';
+        l.className = 'cml'; l.textContent = it.label || b.textContent;
+        s.className = 'cmk'; s.textContent = key;
+        d.appendChild(c); d.appendChild(l); d.appendChild(s);
+        d.onmouseenter = function(){ if (!off) d.focus(); };
+        d.onclick = function(){ if (off) return; closeMenu(); if (b) b.click(); else ACTIONS[it.act](); };
+        g.appendChild(d);
+      });
+      m.appendChild(g);
+    });
+    menuPrev = document.activeElement;
+    document.body.appendChild(m); menuEl = m; // inside <body>, so also inside the full-screen element (documentElement)
+    var de = document.documentElement;
+    m.style.left = Math.max(4, Math.min(x, de.clientWidth - m.offsetWidth - 4)) + 'px';
+    m.style.top = Math.max(4, Math.min(y, de.clientHeight - m.offsetHeight - 4)) + 'px';
+    m.focus();
+    document.addEventListener('pointerdown', menuOutside, true); document.addEventListener('wheel', menuOutside, true);
+    document.addEventListener('scroll', menuOutside, true);
+    window.addEventListener('resize', closeMenu); window.addEventListener('blur', closeMenu);
+  }
+  window.addEventListener('pointerdown', function(e){ rcDown = {x: e.clientX, y: e.clientY}; }, true);
+  document.addEventListener('contextmenu', function(e){
+    if (!$('setBack').hidden) return;
+    var t = e.target, only = null, it;
+    if (!(t instanceof Element)) return;
+    if (vpAt(t)) { // 3D view: only a right click (no drag) opens the menu; the native menu is suppressed either way
+      e.preventDefault();
+      if (rcDown && Math.hypot(e.clientX - rcDown.x, e.clientY - rcDown.y) > 4) return;
+      if (snapSt === 'off') { var uid = hitUid(e.clientX, e.clientY); if (uid !== null && marks.indexOf(uid) < 0) setSelection(uid); } // empty space keeps the selection
+    } else if (t.closest('#asmList')) {
+      it = t.closest('.item'); if (it && !it.classList.contains('sel')) it.click(); // same as a plain left click
+    } else if (t.closest('#list')) {
+      it = t.closest('.item'); if (it && !it.classList.contains('sel')) it.click();
+      only = ['Selection / Edit'];
+    } else return;
+    e.preventDefault(); openMenu(e.clientX, e.clientY, only);
+  });
 
   // toolbar
   function toggle(id, fn){ var b = $(id); b.onclick = function(){ var on = b.getAttribute('aria-pressed') !== 'true'; b.setAttribute('aria-pressed', on); fn(on); }; }
@@ -1506,7 +1785,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   $('bRotG').onclick = function(){ setGizmoMode('rotate'); };
   toggle('bSnapR', function(on){ allTC.forEach(function(t){ t.setRotationSnap(on ? THREE.MathUtils.degToRad(ROT_STEP) : null); }); });
   toggle('bSnapT', function(on){ bbSnap = on; });
-  $('bSnapV').onclick = function(){ if (snapSt === 'off') snapStart(); else snapExit(); };
+  $('bSnapV').onclick = function(){ var own = snapSt === 'pickA' || snapSt === 'pickB'; snapExit(); if (!own) snapStart(); }; // also cancels an armed dimension tool
+  $('bDimL').onclick = function(){ dimStart('dist'); };
+  $('bDimA').onclick = function(){ dimStart('angle'); };
 
   // debug handle for browser tests, only with ?debug in the URL; nothing in the viewer depends on it
   if (/[?&]debug\b/.test(location.search)) { window.EVEDBG = {
@@ -1567,6 +1848,16 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     snapState: function(){
       return {state: snapSt, uidA: snapA ? snapA.uid : null, uidB: snapB ? snapB.uid : null,
         vA: snapA ? snapA.w.toArray() : null, vB: snapB ? snapB.w.toArray() : null, markers: snapMarkers.children.length};
+    },
+    dimMode: function(type){ if (type === 'dist' || type === 'angle') dimStart(type); else snapExit(); return {state: snapSt, tool: dimTool, picked: dimPts.length}; },
+    dimClick: function(x, y){ if (snapSt === 'dim') dimClick(x, y); return {picked: dimPts.length, dims: dims.length}; },
+    dims: function(){ return dims.map(function(d){ var c = dimCalc(d); return {id: d.id, type: d.type, text: c && c.text, pts: d.pts, world: c && c.W.map(function(w){ return w.toArray(); })}; }); },
+    dimScene: function(){ return {children: dimGroup.children.length, visible: dimGroup.visible, inBuilt: built.some(function(g){ return g === dimGroup; })}; },
+    // client px of the vertex of instance `uid` with part-local coordinates `local` (single view)
+    localScreen: function(uid, local){
+      camera.updateMatrixWorld();
+      var v = new THREE.Vector3(local[0], local[1], local[2]).applyMatrix4(instances[findInst(uid)].matrix).project(camera), r = canvas.getBoundingClientRect();
+      return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height];
     },
     lastSnap: function(){ return lastSnapRec ? JSON.parse(JSON.stringify(lastSnapRec)) : null; },
     library: function(){ return {builtin: PARTS.length, user: userParts.map(function(p){ return p.id; }), removed: Object.keys(removedParts)}; },
@@ -1724,6 +2015,35 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   if (window.ResizeObserver) new ResizeObserver(resize).observe(view);
   resize();
 
+  var UI_TOGGLES = [['wire', 'bWire'], ['rot', 'bRot'], ['grid', 'bGrid'], ['four', 'bFour'], ['snapR', 'bSnapR'], ['snapT', 'bSnapT']];
+  function saveUI(){
+    if (!uiReady) return; // never overwrite the stored state with defaults before it was restored
+    try {
+      Array.prototype.forEach.call(list.querySelectorAll('details'), function(d){ catOpen[d.dataset.cat] = d.open; });
+      var s = {gizmo: $('bRotG').getAttribute('aria-pressed') === 'true' ? 'rotate' : 'translate', cats: catOpen, asm: collapsed,
+        scale: Number($('importScale').value), preset: $('importPreset').value};
+      UI_TOGGLES.forEach(function(t){ s[t[0]] = $(t[1]).getAttribute('aria-pressed') === 'true'; });
+      localStorage.setItem(UI_STORE, JSON.stringify(s));
+    } catch (e) { /* session-only */ }
+  }
+  // toggles go through their real click handlers so every side effect runs; each step is isolated
+  function restoreUI(){
+    var u = uiSaved, ps = $('importPreset'), sc = $('importScale');
+    UI_TOGGLES.forEach(function(t){
+      try { if (typeof u[t[0]] === 'boolean' && ($(t[1]).getAttribute('aria-pressed') === 'true') !== u[t[0]]) $(t[1]).click(); }
+      catch (e) { console.warn('EVE3: restoring ' + t[1] + ' failed:', e && e.message); }
+    });
+    try { if (u.gizmo) setGizmoMode(u.gizmo); } catch (e) { console.warn('EVE3: restoring the gizmo mode failed:', e && e.message); }
+    try {
+      if (u.preset) { ps.value = u.preset; if (ps.selectedIndex >= 0 && ps.value) ps.onchange(); else ps.value = ''; }
+      if (u.scale) { sc.value = u.scale; sc.oninput(); } // preset follows the scale, as when typing
+    } catch (e) { console.warn('EVE3: restoring the import box failed:', e && e.message); }
+    uiReady = true;
+  }
+  window.addEventListener('pagehide', saveUI);
+  window.addEventListener('beforeunload', saveUI);
+  document.addEventListener('visibilitychange', function(){ if (document.visibilityState === 'hidden') saveUI(); });
+
   function start(){
     (function loop(){ requestAnimationFrame(loop); if (fourView) renderFour(); else { controls.update(); renderer.render(scene, camera); } })();
     commit(); // initial snapshot (incl. restored imported parts) so the first add can be undone
@@ -1744,6 +2064,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (n) setStatus('restored ' + n + ' imported part' + (n === 1 ? '' : 's'));
     } catch (e) { console.warn('EVE3: restoring imported parts failed:', e && e.message); }
     start();
+    restoreUI();
   });
 })();
 </script>

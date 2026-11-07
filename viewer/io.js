@@ -413,8 +413,24 @@
     }
   }
 
-  // records: [{part: id, matrix:[16]}], userParts: [{id, name, category, meshes}] -> compact JSON string
-  function serializeAssembly(records, userParts) {
+  // dimension line/angle: {type: 'dist' (2 points) | 'angle' (3 points: arm end, apex, arm end), pts: [{inst: index, local: [x, y, z]}]};
+  // returns null when valid, else the reason. inst indexes the instances array of the same file.
+  function dimProblem(x, nInst) {
+    if (!x || typeof x !== 'object') return 'must be an object';
+    var n = x.type === 'dist' ? 2 : x.type === 'angle' ? 3 : 0;
+    if (!n) return 'type must be "dist" or "angle"';
+    if (!Array.isArray(x.pts) || x.pts.length !== n) return 'type "' + x.type + '" needs exactly ' + n + ' points';
+    for (var k = 0; k < n; k++) {
+      var p = x.pts[k];
+      if (!p || typeof p !== 'object') return 'point ' + k + ' must be an object';
+      if (typeof p.inst !== 'number' || p.inst % 1 !== 0 || p.inst < 0 || p.inst >= nInst) return 'point ' + k + ': inst is not a valid instance index';
+      if (!Array.isArray(p.local) || p.local.length !== 3 || p.local.some(function (c) { return typeof c !== 'number' || !isFinite(c); })) return 'point ' + k + ': local must be 3 finite numbers';
+    }
+    return null;
+  }
+
+  // records: [{part: id, matrix:[16]}], userParts: [{id, name, category, meshes}], dimensions (optional): see dimProblem -> compact JSON string
+  function serializeAssembly(records, userParts, dimensions) {
     if (!Array.isArray(records)) throw new Error('serializeAssembly: expected an array of records');
     var inst = records.map(function (r, i) {
       var w = 'serializeAssembly: instance ' + i;
@@ -433,7 +449,15 @@
         meshes: p.meshes.map(function (m) { return { color: m.color, v: m.v, f: m.f }; })
       };
     });
-    return JSON.stringify({ format: 'eve3-assembly', version: 1, units: 'mm', instances: inst, userParts: ups });
+    var out = { format: 'eve3-assembly', version: 1, units: 'mm', instances: inst, userParts: ups };
+    if (dimensions && dimensions.length) {
+      out.dimensions = dimensions.map(function (x, i) {
+        var bad = dimProblem(x, inst.length);
+        if (bad) throw new Error('serializeAssembly: dimension ' + i + ': ' + bad);
+        return { type: x.type, pts: x.pts.map(function (p) { return { inst: p.inst, local: p.local.slice() }; }) };
+      });
+    }
+    return JSON.stringify(out);
   }
 
   // opts: {knownIds: function(id) -> bool | array of ids, maxBytes}. Unknown instance part ids are skipped, not thrown.
@@ -467,19 +491,28 @@
         return finishPart({ id: p.id, name: p.name, category: typeof p.category === 'string' && p.category ? p.category : 'Imported', meshes: meshes });
       } catch (e) { throw new Error(w + ': ' + e.message); }
     });
-    var inst = [];
+    var inst = [], remap = []; // remap: index in the file -> index in the returned instances (skipped ones have none)
     d.instances.forEach(function (r, i) {
       var w = 'Assembly JSON: instance ' + i;
       if (!r || typeof r !== 'object') throw new Error(w + ': must be an object');
       checkId(r.part, w);
       checkMatrix(r.matrix, w, true);
-      if (own[r.part] || knows(r.part)) inst.push({ part: r.part, matrix: r.matrix.slice() });
+      if (own[r.part] || knows(r.part)) { remap[i] = inst.length; inst.push({ part: r.part, matrix: r.matrix.slice() }); }
       else {
         skipped.push({ index: i, part: r.part });
         warnings.push(w + ': unknown part id "' + r.part + '", skipped');
       }
     });
-    return { instances: inst, userParts: parts, skipped: skipped, warnings: warnings };
+    // optional dimensions: a bad entry is dropped with a warning, never thrown; inst in the result indexes the returned instances
+    var dimensions = [];
+    if (d.dimensions != null && !Array.isArray(d.dimensions)) warnings.push('Assembly JSON: dimensions must be an array, ignored');
+    else (d.dimensions || []).forEach(function (x, i) {
+      var bad = dimProblem(x, d.instances.length);
+      if (!bad && x.pts.some(function (p) { return remap[p.inst] === undefined; })) bad = 'refers to a skipped instance';
+      if (bad) { warnings.push('Assembly JSON: dimension ' + i + ': ' + bad + ', dropped'); return; }
+      dimensions.push({ type: x.type, pts: x.pts.map(function (p) { return { inst: remap[p.inst], local: p.local.slice() }; }) });
+    });
+    return { instances: inst, userParts: parts, skipped: skipped, warnings: warnings, dimensions: dimensions };
   }
 
   function arraysEqual(p, q) {
