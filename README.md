@@ -33,7 +33,7 @@ Assembly mode "Reset view" and "Frame all" frame the whole assembly and "Wirefra
 | Select | click it in the Assembly list or in the 3D view; Up/Down step through the visible rows; Esc or a click on empty space deselects |
 | Assembly list | one group per part (header = name and "×N", click it to select all its instances, the small caret collapses/expands); instances are listed below with their `#uid` |
 | Multi-select | Ctrl+click toggles, Shift+click marks the range from the last clicked row (in the Assembly list a group header counts as its instances; rows inside a collapsed sidebar category are skipped). Ctrl+click on a part in the 3D view toggles it too. **Ctrl + left-drag** on the 3D view (Assembly mode, from anywhere, also from a part) draws a translucent rubber band; on release every instance whose projected bounding box touches the rectangle is ADDED to the marks (no occlusion test; nothing inside = nothing changes; Esc during the drag cancels; Orbit and the gizmo are off for that drag; a Ctrl+click under 4 px still toggles). Shift + left-drag still pans via the orbit controls. Selection is not an undo step. Marked rows are highlighted; Esc clears the marks. Exactly one marked: the gizmo uses the part's own axes. Two or more marked: one gizmo at the centroid of their bounding-box centres, in world axes; Move/Rotate (W/E) and the snap toggles work as usual and a drag moves or rotates (about that centroid) ALL marked instances as ONE undo step; the gizmo is hidden during vertex snap. Delete removes all marked instances (one undo step) |
-| Move / rotate | gizmo on the selected part; "Move" (W) / "Rotate" (E) |
+| Move / rotate | gizmo on the selected part; "Move" (W) / "Rotate" (E). Hold **Alt** when you start the gizmo drag to copy: the original(s) stay, a copy (or copies, for a multi-selection) ends up at the dragged position and becomes the selection; one undo step |
 | Camera | left drag orbits, **middle button (wheel pressed) drag pans**, wheel zooms; the right button does nothing |
 | Four view | "Four view" (key 4), in Preview and Assembly mode: a 2x2 grid with Top (top left, looking down, +X right, +Y up), Perspective (top right, the normal orbit camera), Front (bottom left, from -Y, +X right, +Z up) and Left (bottom right, from -X looking along +X, +Z up). Top/Front/Left are orthographic: wheel zooms, middle drag pans, no rotation. Frame all / Reset view re-frame all four. Picking, Ctrl+click, Ctrl+drag box select, vertex snap and the gizmo work in every viewport (each viewport shows its own gizmo; a drag in the Top view moves X/Y only, ...). The ground grid is shown in Top and Perspective only. "Max" in a viewport corner (or a double-click on its label) maximizes that viewport over the whole 3D view and restores the 2x2 layout; the choice is remembered for the session. Auto-rotate turns the Perspective view only. Four view is not saved |
 | Full screen | "Full screen" (Alt+Enter) uses the browser full screen: header, side panels, status and footer are hidden and the 3D view fills the screen with an "Exit full screen" button (and the Four view controls) floating inside it. Esc or F11 leave it too (that Esc does not clear the selection); all shortcuts keep working |
@@ -71,16 +71,17 @@ viewer silently falls back to session-only behaviour.
 ### Settings and shortcuts
 
 The "Settings" button (header) lists every keyboard action with its shortcut. Click a shortcut, press the new combination
-(Ctrl/Shift/Alt + key; Esc cancels), or use "Clear" / "Reset" per action and "Reset all". A combination already used by
+(Ctrl/Shift/Alt + key; Esc cancels), or use "Clear" / "Reset" per action and "Reset shortcuts". A combination already used by
 another action is refused with the name of that action. Defaults: Move gizmo W, Rotate gizmo E, Snap vertex S, Delete Del,
 Undo Ctrl+Z, Redo Ctrl+Y / Ctrl+Shift+Z, Deselect Esc, Snap 15° A, Snap Z, Switch Preview / Assembly Q, Toggle four view 4, Toggle full screen Alt+Enter, Frame all F, Reset view R, Toggle wireframe X,
 Toggle grid G, Toggle auto-rotate T (it was A in an earlier version: a saved auto-rotate = A override is ignored, the
 Snap 15° default keeps A), Add to assembly Ctrl+Enter. Up/Down list stepping and Backspace (snap re-pick) are fixed and cannot be bound;
-Esc always leaves snap mode. Shortcuts are ignored while typing in a field or while the dialog is open. The browser keeps
+Esc always leaves snap mode. Shortcuts are ignored while typing in a field or while the dialog is open. The dialog has two tabs, "Shortcuts" and "Settings" (rotation snap step and the "Autofocus to selected" option, which re-aims the orbit at a new selection; saved in localStorage); during an Alt-drag copy the source parts show as translucent ghosts at their start position. The browser keeps
 some combinations for itself (e.g. Ctrl+W, Ctrl+T, Ctrl+N), they cannot be captured. Shift+letter still triggers a plain
 letter binding (as before) unless that Shift combination is bound itself. Bindings are saved in localStorage
 (`eve3.keys`, only the changed actions); missing or corrupt data falls back to the defaults. Button tooltips show the
-current shortcuts.
+current shortcuts. The "Rotation" section sets the step of the rotate snap (the "Snap 15°" button; 0.1 to 180°, default 15, saved as `eve3.rotstep`).
+Selecting parts in Assembly mode also re-targets the orbit to the centre of the selection (the camera position is kept).
 
 ### Categories (Part viewer panel)
 

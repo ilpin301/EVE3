@@ -60,6 +60,11 @@ summary{cursor:pointer;font-weight:600;padding:4px 2px;color:var(--muted);user-s
 #setBack[hidden]{display:none}
 #setBox{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:16px;width:min(560px,94vw);max-height:90vh;overflow:auto}
 #setBox h2{margin:0 0 8px;font-size:16px}
+#setBox h3{margin:10px 0 4px;font-size:13px}
+.tabs{display:flex;gap:6px;margin:0 0 8px}
+.tabs button[aria-selected="true"]{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+#setBox [role=tabpanel][hidden]{display:none}
+.krow input[type=number]{width:90px}
 .krow{display:flex;gap:6px;align-items:center;padding:3px 0}
 .krow .kl{flex:1}
 .krow .kb{min-width:170px;text-align:left}
@@ -169,10 +174,21 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 </main>
 <div id="setBack" hidden>
   <div id="setBox" role="dialog" aria-modal="true" aria-labelledby="setTitle">
-    <h2 id="setTitle">Settings: keyboard shortcuts</h2>
-    <div id="setList"></div>
+    <h2 id="setTitle">Settings</h2>
+    <div class="tabs" role="tablist" aria-label="Settings sections">
+      <button id="tabKeys" role="tab" aria-selected="true" aria-controls="panKeys">Shortcuts</button>
+      <button id="tabSet" role="tab" aria-selected="false" aria-controls="panSet" tabindex="-1">Settings</button>
+    </div>
+    <div id="panKeys" role="tabpanel" aria-labelledby="tabKeys">
+      <div id="setList"></div>
+      <div class="toolbar"><button id="setResetAll">Reset shortcuts</button></div>
+    </div>
+    <div id="panSet" role="tabpanel" aria-labelledby="tabSet" hidden>
+      <div class="krow"><label class="kl" for="rotStep">Step of rotate snapping (&deg;)</label><input type="number" id="rotStep" min="0.1" max="180" step="any"></div>
+      <div class="krow"><label class="kl" for="autoFocus">Autofocus to selected</label><input type="checkbox" id="autoFocus"></div>
+    </div>
     <div id="setMsg" class="muted" aria-live="polite"></div>
-    <div class="toolbar"><button id="setResetAll">Reset all</button><button id="setClose">Close</button></div>
+    <div class="toolbar"><button id="setClose">Close</button></div>
   </div>
 </div>
 <footer>Geometry from the LDraw Parts Library (CC BY 4.0), original EV3 shapes by the LEGO MINDSTORMS Team. Not an official LEGO product.</footer>
@@ -269,7 +285,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var mode = 'preview', instances = [], uidCounter = 0, built = [];
   // selection: marks = marked instance uids; selUid = the one instance when exactly one is marked (gizmo/snap), else null;
   // anchorKey = row key of the last plain/ctrl click ('i:<uid>' instance row, 'g:<partId>' group header) for Shift ranges
-  var marks = [], selUid = null, anchorKey = null, asmRows = [], collapsed = {};
+  var AUTOFOCUS = true, marks = [], lastMarkKey = '', selUid = null, anchorKey = null, asmRows = [], collapsed = {};
   var pmarks = [], pAnchor = null; // marked part ids in the Part viewer panel (`current` = last clicked, always one of them)
 
   // imported parts persist in IndexedDB; every failure leaves the session-only behaviour
@@ -415,11 +431,33 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   // instances: matrix is the source of truth, applied by decompose (matrixAutoUpdate stays true)
   function applyMatrix(inst){ inst.matrix.decompose(inst.obj.position, inst.obj.quaternion, tmpScale); }
   function syncMatrixFromObj(inst){ inst.obj.updateMatrix(); inst.matrix.copy(inst.obj.matrix); }
-  function beforeRebuild(){ allTC.forEach(function(t){ t.detach(); }); } // never point at a group about to be disposed
+  // Alt-drag ghosts: translucent copies of the sources at their start matrices (not in `built`: never picked/exported/framed)
+  var ghostGroup = new THREE.Group();
+  scene.add(ghostGroup);
+  function clearGhosts(){ while (ghostGroup.children.length) { var g = ghostGroup.children[0]; ghostGroup.remove(g); disposeObj(g); } }
+  function addGhost(partId, m){
+    var p = lookupPart(partId); if (!p) return;
+    var g = makePartGroup(p, wire); // fresh geometry + materials per call, so disposeObj is safe
+    new THREE.Matrix4().fromArray(m).decompose(g.position, g.quaternion, tmpScale);
+    g.traverse(function(o){ if (o.isMesh) { o.material.transparent = true; o.material.opacity = 0.3; o.material.depthWrite = false; } });
+    ghostGroup.add(g);
+  }
+  function beforeRebuild(){ clearGhosts(); allTC.forEach(function(t){ t.detach(); }); } // never point at a group about to be disposed
   function afterRebuild(){}  // gizmo re-attaches by selUid in setSelection(), called at the end of rebuildInstances()
 
   // gizmo commit: one undo step per drag that actually changed the transform
-  var dragStart = null, grp = null;
+  var dragStart = null, grp = null, altDrag = false, dragCopy = false;
+  // capture phase: runs before TransformControls handles the press, so Alt is known when its mouseDown fires
+  window.addEventListener('pointerdown', function(e){ altDrag = e.altKey; }, true);
+  // Alt-drag: the dragged matrices become new instances, the originals go back to their start matrices; ONE undo step
+  function dropCopies(recs){
+    var uids = recs.map(function(r){
+      var n = {uid: ++uidCounter, partId: r.i.partId, matrix: r.i.matrix.clone(), obj: null};
+      instances.push(n); r.i.matrix.fromArray(r.m);
+      return n.uid;
+    });
+    setMarks(uids, 'i:' + uids[uids.length - 1]); rebuildInstances(); commit();
+  }
   function selInst(){ var k = findInst(selUid); return k >= 0 && instances[k].obj ? instances[k] : null; }
   // 2+ marked: the gizmo sits on `pivot` (world axes, at the centroid of the marked bbox centres); it is a bare Object3D in the scene, never in `built`
   // (so not picked) and never read by export/save/frame-all (they use instance data). A drag applies the pivot's delta (rotation about its start
@@ -484,11 +522,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
   function onTC(type, fn){ allTC.forEach(function(t){ t.addEventListener(type, fn); }); }
   onTC('mouseDown', function(e){
+    dragCopy = altDrag; altDrag = false;
+    clearGhosts();
     if (e.target.object === pivot) {
       grp = {p0: pivot.position.clone(), recs: marks.map(function(u){ var i = instances[findInst(u)]; return {i: i, m: i.matrix.elements.slice()}; })};
+      if (dragCopy) grp.recs.forEach(function(r){ addGhost(r.i.partId, r.m); });
       return;
     }
     var i = selInst(); dragStart = i ? i.matrix.elements.slice() : null;
+    if (dragCopy && i) addGhost(i.partId, dragStart);
   });
   onTC('objectChange', function(e){
     var rot = e.target.mode === 'rotate', o = grp ? pivot : (selInst() || {}).obj;
@@ -498,12 +540,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (bbSnap && !rot) bbSnapMove(snapMoved(), true);
   });
   onTC('mouseUp', function(e){
-    clearBbHi();
-    var rot = e.target.mode === 'rotate';
+    clearBbHi(); clearGhosts();
+    var rot = e.target.mode === 'rotate', cp = dragCopy; dragCopy = false;
     if (grp) { // ONE undo step for the whole group drag (matrices are already current: objectChange ran on the last move)
       if (bbSnap && rot) bbSnapMove(snapMoved(), false);
       var g = grp; grp = null;
       var changed = g.recs.some(function(r){ for (var j = 0; j < 16; j++) if (Math.abs(r.i.matrix.elements[j] - r.m[j]) > 1e-9) return true; return false; });
+      if (changed && cp) { dropCopies(g.recs); if (marks.length > 1) placePivot(); return; } // TransformControls may still report dragging here
       placePivot(); // re-centre, rotation back to identity
       if (changed) commit();
       return;
@@ -513,7 +556,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     syncMatrixFromObj(i);
     if (bbSnap && rot) bbSnapMove([i], false);
     // tolerance: decompose/compose round trip after undo can differ by an ulp
-    for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { commit(); return; }
+    for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { if (cp) dropCopies([{i: i, m: s}]); else commit(); return; }
   });
   function setGizmoMode(m){
     allTC.forEach(function(t){ t.setMode(m); });
@@ -711,6 +754,14 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (t && on4.indexOf(c) >= 0) { if (c.object !== t) c.attach(t); }
       else if (c.object) c.detach();
     });
+    // orbit around the selection: retarget only when the marked set actually changed (rebuild/undo/gizmo paths re-call with the same marks)
+    var mk = marks.join(',');
+    if (AUTOFOCUS && mk !== lastMarkKey && marks.length > 0 && mode === 'assembly') {
+      var ub = new THREE.Box3();
+      marks.forEach(function(u){ var bx = instBox(instances[findInst(u)]); if (!bx.isEmpty()) ub.union(bx); });
+      if (!ub.isEmpty()) { var ob = fourView ? V4[1].orbit : controls; ub.getCenter(ob.target); ob.update(); }
+    }
+    lastMarkKey = mk;
   }
   function setSelection(uid){ var ok = uid !== null && uid !== undefined; setMarks(ok ? [uid] : [], ok ? 'i:' + uid : null); }
   function refreshSel(){ setMarks(marks); }
@@ -1260,7 +1311,17 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
 
   // keyboard: bindings come from the Settings table (io.js); Up/Down list stepping and snap-mode Backspace are hard-wired
-  var KEYS_STORE = 'eve3.keys';
+  var KEYS_STORE = 'eve3.keys', ROT_STORE = 'eve3.rotstep';
+  var ROT_STEP = (function(){ // degrees; garbage in storage is ignored
+    try { var v = parseFloat(localStorage.getItem(ROT_STORE)); if (isFinite(v) && v >= 0.1 && v <= 180) return v; } catch (e) {}
+    return 15;
+  })();
+  $('bSnapR').textContent = 'Snap ' + ROT_STEP + '°';
+  var AF_STORE = 'eve3.autofocus';
+  AUTOFOCUS = (function(){ // garbage in storage is ignored (default on)
+    try { var v = localStorage.getItem(AF_STORE); if (v === '0') return false; } catch (e) {}
+    return true;
+  })();
   var bindings = (function(){
     var saved = null;
     try { var raw = localStorage.getItem(KEYS_STORE); if (raw) saved = JSON.parse(raw); } catch (e) { saved = null; }
@@ -1284,12 +1345,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     grid: clickBtn('bGrid'), autoRotate: clickBtn('bRot'), addToAssembly: clickBtn('bAdd')
   };
   var TITLES = {bPrev: ['toggleMode', 'Preview mode'], bAsm: ['toggleMode', 'Assembly mode'], bFour: ['fourView', 'Four view'], bFull: ['fullscreen', 'Full screen'], bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'],
-    bSnapR: ['snap15', 'Snap 15°'], bSnapT: ['snap1mm', 'Snap to nearby bounding boxes'],
+    bSnapR: ['snap15', function(){ return 'Snap ' + ROT_STEP + '°'; }], bSnapT: ['snap1mm', 'Snap to nearby bounding boxes'],
     bDel: ['deleteSel', 'Delete'], bUndo: ['undo', 'Undo'], bRedo: ['redo', 'Redo'], bFrameAll: ['frameAll', 'Frame all'],
     bReset: ['resetView', 'Reset view'], bWire: ['wireframe', 'Wireframe'], bGrid: ['grid', 'Grid + axes'],
     bRot: ['autoRotate', 'Auto-rotate'], bAdd: ['addToAssembly', 'Add to assembly']};
   function applyTitles(){
-    Object.keys(TITLES).forEach(function(id){ var t = TITLES[id], k = bindings[t[0]]; $(id).title = t[1] + (k.length ? ' (' + k.join(' / ') + ')' : ''); });
+    Object.keys(TITLES).forEach(function(id){ var t = TITLES[id], k = bindings[t[0]]; $(id).title = (typeof t[1] === 'function' ? t[1]() : t[1]) + (k.length ? ' (' + k.join(' / ') + ')' : ''); });
   }
   applyTitles();
 
@@ -1327,7 +1388,22 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       r.appendChild(l); r.appendChild(b); r.appendChild(c); r.appendChild(d); L.appendChild(r);
     });
   }
-  function openSettings(){ capId = null; setMsg(''); renderSettings(); $('setBack').hidden = false; $('setClose').focus(); }
+  var setTab = 'tabKeys'; // last-used tab, this page session only
+  function showTab(id){
+    setTab = id; capId = null; setMsg(''); renderSettings();
+    ['tabKeys', 'tabSet'].forEach(function(t){
+      var on = t === id, p = $(t === 'tabKeys' ? 'panKeys' : 'panSet');
+      $(t).setAttribute('aria-selected', on); $(t).tabIndex = on ? 0 : -1; p.hidden = !on;
+    });
+  }
+  ['tabKeys', 'tabSet'].forEach(function(t){
+    $(t).onclick = function(){ showTab(t); };
+    $(t).onkeydown = function(e){
+      if (capId !== null || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+      e.preventDefault(); var n = t === 'tabKeys' ? 'tabSet' : 'tabKeys'; showTab(n); $(n).focus();
+    };
+  });
+  function openSettings(){ showTab(setTab); $('rotStep').value = ROT_STEP; $('autoFocus').checked = AUTOFOCUS; $('setBack').hidden = false; $(setTab).focus(); }
   function closeSettings(){ capId = null; $('setBack').hidden = true; $('bSettings').focus(); }
   function settingsKey(e){
     if (capId === null) { if (e.key === 'Escape') { e.preventDefault(); closeSettings(); } return; }
@@ -1343,7 +1419,23 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   $('bSettings').onclick = openSettings;
   $('setClose').onclick = closeSettings;
   $('setBack').onclick = function(e){ if (e.target === this) closeSettings(); };
-  $('setResetAll').onclick = function(){ capId = null; bindings = EVEIO.mergeBindings(null); setMsg('All shortcuts reset.'); saveKeys(); };
+  function applyRotStep(){
+    if ($('bSnapR').getAttribute('aria-pressed') === 'true') allTC.forEach(function(t){ t.setRotationSnap(THREE.MathUtils.degToRad(ROT_STEP)); });
+    $('bSnapR').textContent = 'Snap ' + ROT_STEP + '°'; applyTitles();
+  }
+  $('rotStep').onchange = function(){
+    var v = parseFloat(this.value);
+    if (isFinite(v) && v >= 0.1 && v <= 180) {
+      ROT_STEP = v; setMsg('');
+      try { localStorage.setItem(ROT_STORE, String(v)); } catch (e) { setMsg('Could not save the step (browser storage unavailable); it lasts until you reload.'); }
+      applyRotStep();
+    } else { this.value = ROT_STEP; setMsg('Step must be between 0.1 and 180 degrees.'); }
+  };
+  $('autoFocus').onchange = function(){
+    AUTOFOCUS = this.checked; setMsg('');
+    try { localStorage.setItem(AF_STORE, AUTOFOCUS ? '1' : '0'); } catch (e) { setMsg('Could not save the option (browser storage unavailable); it lasts until you reload.'); }
+  };
+  $('setResetAll').onclick =function(){ capId = null; bindings = EVEIO.mergeBindings(null); setMsg('All shortcuts reset.'); saveKeys(); };
 
   function onKey(e){
     if (rb) { if (e.key === 'Escape') { e.preventDefault(); rbEnd(false); } return; } // box select in progress: Esc cancels, nothing else acts
@@ -1412,7 +1504,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   };
   $('bMove').onclick = function(){ setGizmoMode('translate'); };
   $('bRotG').onclick = function(){ setGizmoMode('rotate'); };
-  toggle('bSnapR', function(on){ allTC.forEach(function(t){ t.setRotationSnap(on ? THREE.MathUtils.degToRad(15) : null); }); });
+  toggle('bSnapR', function(on){ allTC.forEach(function(t){ t.setRotationSnap(on ? THREE.MathUtils.degToRad(ROT_STEP) : null); }); });
   toggle('bSnapT', function(on){ bbSnap = on; });
   $('bSnapV').onclick = function(){ if (snapSt === 'off') snapStart(); else snapExit(); };
 
@@ -1469,6 +1561,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     },
     bbox: function(uid){ var k = findInst(uid); if (k < 0 || !instances[k].obj) return null; var b = new THREE.Box3().setFromObject(instances[k].obj); return {min: b.min.toArray(), max: b.max.toArray()}; },
     snapHelpers: function(){ return bbHi.children.length; },
+    ghosts: function(){ return ghostGroup.children.length; },
     setGizmoMode: function(m){ if (m === 'translate' || m === 'rotate') setGizmoMode(m); },
     snapMode: function(on){ if (on) snapStart(); else snapExit(); return snapSt; },
     snapState: function(){
