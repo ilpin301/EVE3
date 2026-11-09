@@ -413,12 +413,13 @@
     }
   }
 
-  // dimension line/angle: {type: 'dist' (2 points) | 'angle' (3 points: arm end, apex, arm end), pts: [{inst: index, local: [x, y, z]}]};
+  // dimension: {type: 'dist' (2 points) | 'angle' (3 points: arm end, apex, arm end; old tool) | 'angle2' (4 points: line 1 start/end, line 2 start/end), pts: [{inst: index, local: [x, y, z]}],
+  // off (optional): [x, y, z] world-space vector (dist: shift of the dimension line; angle2: arc placement point minus the lines' intersection)};
   // returns null when valid, else the reason. inst indexes the instances array of the same file.
   function dimProblem(x, nInst) {
     if (!x || typeof x !== 'object') return 'must be an object';
-    var n = x.type === 'dist' ? 2 : x.type === 'angle' ? 3 : 0;
-    if (!n) return 'type must be "dist" or "angle"';
+    var n = x.type === 'dist' ? 2 : x.type === 'angle' ? 3 : x.type === 'angle2' ? 4 : 0;
+    if (!n) return 'type must be "dist", "angle" or "angle2"';
     if (!Array.isArray(x.pts) || x.pts.length !== n) return 'type "' + x.type + '" needs exactly ' + n + ' points';
     for (var k = 0; k < n; k++) {
       var p = x.pts[k];
@@ -426,6 +427,7 @@
       if (typeof p.inst !== 'number' || p.inst % 1 !== 0 || p.inst < 0 || p.inst >= nInst) return 'point ' + k + ': inst is not a valid instance index';
       if (!Array.isArray(p.local) || p.local.length !== 3 || p.local.some(function (c) { return typeof c !== 'number' || !isFinite(c); })) return 'point ' + k + ': local must be 3 finite numbers';
     }
+    if (x.off != null && (!Array.isArray(x.off) || x.off.length !== 3 || x.off.some(function (c) { return typeof c !== 'number' || !isFinite(c); }))) return 'off must be 3 finite numbers';
     return null;
   }
 
@@ -454,7 +456,9 @@
       out.dimensions = dimensions.map(function (x, i) {
         var bad = dimProblem(x, inst.length);
         if (bad) throw new Error('serializeAssembly: dimension ' + i + ': ' + bad);
-        return { type: x.type, pts: x.pts.map(function (p) { return { inst: p.inst, local: p.local.slice() }; }) };
+        var o = { type: x.type, pts: x.pts.map(function (p) { return { inst: p.inst, local: p.local.slice() }; }) };
+        if (x.off != null) o.off = x.off.slice();
+        return o;
       });
     }
     return JSON.stringify(out);
@@ -510,7 +514,9 @@
       var bad = dimProblem(x, d.instances.length);
       if (!bad && x.pts.some(function (p) { return remap[p.inst] === undefined; })) bad = 'refers to a skipped instance';
       if (bad) { warnings.push('Assembly JSON: dimension ' + i + ': ' + bad + ', dropped'); return; }
-      dimensions.push({ type: x.type, pts: x.pts.map(function (p) { return { inst: remap[p.inst], local: p.local.slice() }; }) });
+      var o = { type: x.type, pts: x.pts.map(function (p) { return { inst: remap[p.inst], local: p.local.slice() }; }) };
+      if (x.off != null) o.off = x.off.slice();
+      dimensions.push(o);
     });
     return { instances: inst, userParts: parts, skipped: skipped, warnings: warnings, dimensions: dimensions };
   }

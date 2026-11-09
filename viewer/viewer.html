@@ -39,7 +39,8 @@ aside#asm{width:240px;border-right:0;border-left:1px solid var(--border);padding
 #dimBox h3{font-size:13px;margin:0 0 2px;color:var(--muted)}
 #dimList{max-height:20vh;overflow:auto}
 .dimrow{display:flex;align-items:center;padding:1px 0 1px 8px}
-.dimrow span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dimrow span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.dimrow.sel{background:var(--accent);color:var(--accent-text)}
 #search{margin:8px;padding:6px 8px;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:6px}
 #list{flex:1;overflow:auto;padding:0 8px 8px}
 #importBox{padding:8px 8px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -140,7 +141,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     <button id="bSnapT" aria-pressed="false">Snap</button>
     <button id="bSnapV" aria-pressed="false" title="Snap vertex A onto vertex B (S)">Snap vertex</button>
     <button id="bDimL" aria-pressed="false" title="Dimension line: click 2 vertices (distance in mm)">Dim line</button>
-    <button id="bDimA" aria-pressed="false" title="Dimension angle: click arm end, apex, arm end">Dim angle</button>
+    <button id="bDimA" aria-pressed="false" title="Dimension angle between two lines: click 2 points of line 1, 2 points of line 2, then click to place">Dim angle</button>
   </div>
   <button id="bFull" class="spacer" aria-pressed="false">Full screen</button>
   <button id="bSettings">Settings</button>
@@ -295,9 +296,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var snapMarkers = new THREE.Group(); // vertex-snap markers: not in `built`, so never raycast or exported
   scene.add(snapMarkers);
   var snapSt = 'off', snapA = null, snapB = null, lastSnapRec = null; // vertex snap: off | pickA | pickB; 'dim' = a dimension tool is armed (dimTool, dimPts)
-  // dimensions: dims = [{id, type: 'dist' | 'angle', pts: [{uid, local: [x, y, z]}]}], local = vertex in the instance's own (part) coordinates, so the
-  // world point is instance.matrix * local and the dimension follows the part. dimGroup (lines + label sprites) is not in `built`: never picked/exported/framed.
-  var dims = [], dimCounter = 0, dimTool = null, dimPts = [], dimEls = {};
+  // dimensions: dims = [{id, type: 'dist' | 'angle2' | 'angle', pts: [{uid, local: [x, y, z]}], off?: [x, y, z]}], local = vertex in the instance's own (part) coordinates, so the
+  // world point is instance.matrix * local and the dimension follows the part. dist = 2 points; angle2 = 4 points (line 1 start/end, line 2 start/end; what the Dim angle
+  // tool creates); angle = 3 points (arm end, apex, arm end; old files only, display/load/save). off (optional, world vector, absent = zero): dist = shift of the
+  // dimension line away from the measured points (extension lines join them); angle2 = placement point Q minus the lines' intersection C (arc radius + sector). dimGroup (lines + label sprites) is not in `built`: never picked/exported/framed.
+  // selDims = ids of the selected dimensions ([] = none); dimGeo[id] = {seg, at, aspect} of the last rebuildDims, for click hit-testing (dimAt).
+  // keepDimSel: set only by setMarksKeep, so a part add/toggle/box keeps the dimension selection (every other setMarks replaces it).
+  var dims = [], dimCounter = 0, dimTool = null, dimPts = [], dimEls = {}, selDims = [], dimGeo = {}, keepDimSel = false, dimV = new THREE.Vector3();
   var dimGroup = new THREE.Group();
   scene.add(dimGroup);
 
@@ -685,22 +690,27 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 
   function deleteSelected(){
     snapExit();
-    if (!marks.length) return;
-    var gone = marks;
-    instances = instances.filter(function(i){ return gone.indexOf(i.uid) < 0; });
-    marks = []; anchorKey = null;
-    rebuildInstances();
+    if (!marks.length && !selDims.length) return;
+    var gone = marks, gd = selDims; // marked parts and selected dimensions go together in ONE commit
+    dims = dims.filter(function(d){ return gd.indexOf(d.id) < 0; });
+    selDims = [];
+    if (gone.length) {
+      instances = instances.filter(function(i){ return gone.indexOf(i.uid) < 0; });
+      marks = []; anchorKey = null;
+      rebuildInstances(); // also refreshes the dimension list + 3D
+    } else { renderDimList(); rebuildDims(); }
     commit();
   }
 
   // undo/redo: snapshot stack, commit() after every user action
   var undoStack = [], undoIdx = -1, restoring = false, UNDO_MAX = 100;
+  function dimCopy(d){ var o = {id: d.id, type: d.type, pts: d.pts.map(function(p){ return {uid: p.uid, local: p.local.slice()}; })}; if (d.off) o.off = d.off.slice(); return o; }
   function snapshot(){
     return {
       instances: instances.map(function(i){ return {uid: i.uid, partId: i.partId, matrix16: i.matrix.elements.slice()}; }),
       userPartIds: userParts.map(function(p){ return p.id; }),
       uidCounter: uidCounter,
-      dims: dims.map(function(d){ return {id: d.id, type: d.type, pts: d.pts.map(function(p){ return {uid: p.uid, local: p.local.slice()}; })}; }),
+      dims: dims.map(dimCopy),
       dimCounter: dimCounter
     };
   }
@@ -750,7 +760,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
         instances.push({uid: r.uid, partId: r.partId, matrix: new THREE.Matrix4().fromArray(r.matrix16), obj: null});
       });
       uidCounter = Math.max(uidCounter, s.uidCounter || 0); // uids never repeat
-      dims = (s.dims || []).map(function(d){ return {id: d.id, type: d.type, pts: d.pts.map(function(p){ return {uid: p.uid, local: p.local.slice()}; })}; });
+      dims = (s.dims || []).map(dimCopy);
       dimCounter = Math.max(dimCounter, s.dimCounter || 0);
       rebuildInstances(); // clears selUid if gone, refreshes the list; no groups in Preview mode
     } finally { restoring = false; }
@@ -763,6 +773,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     marks = uids.filter(function(u, k){ return findInst(u) >= 0 && uids.indexOf(u) === k; });
     if (key !== undefined) anchorKey = key;
     selUid = marks.length === 1 ? marks[0] : null;
+    if (marks.length && selDims.length && !keepDimSel) { selDims = []; renderDimList(); rebuildDims(); } // a part selection replaces the dimension selection
     renderAsmList();
     instances.forEach(function(i){
       if (!i.obj) return;
@@ -794,18 +805,20 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     lastMarkKey = mk;
   }
   function setSelection(uid){ var ok = uid !== null && uid !== undefined; setMarks(ok ? [uid] : [], ok ? 'i:' + uid : null); }
-  function refreshSel(){ setMarks(marks); }
+  function setMarksKeep(uids, key){ keepDimSel = true; try { setMarks(uids, key); } finally { keepDimSel = false; } } // mixed part + dimension selection
+  function refreshSel(){ setMarksKeep(marks); } // not a selection change (rebuild/undo/gizmo paths): must not wipe the dimension selection
 
   // 3D picking: instance groups only (helpers/grid/axes are not in `built`)
   var raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), canvas = renderer.domElement, down = null;
   // shared raycast for click-select and vertex snap; null = canvas has no size
-  function rayHits(x, y, objs){
+  function rayAt(x, y){ // the pick ray for client x, y (raycaster.ray, reused); null = canvas has no size
     var r = act.el.getBoundingClientRect(); // act = the viewport that was clicked
     if (!r.width || !r.height) return null;
     ndc.set((x - r.left) / r.width * 2 - 1, -(y - r.top) / r.height * 2 + 1);
     raycaster.setFromCamera(ndc, act.cam);
-    return raycaster.intersectObjects(objs, true);
+    return raycaster.ray;
   }
+  function rayHits(x, y, objs){ return rayAt(x, y) ? raycaster.intersectObjects(objs, true) : null; }
   function uidOf(o){ for (; o; o = o.parent) if (o.userData.uid !== undefined) return o.userData.uid; return null; }
   function hitUid(x, y){ // the instance under the cursor, or null (also in Preview mode / while the gizmo is busy); selects nothing
     if (mode !== 'assembly' || tcBusy()) return null;
@@ -819,7 +832,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (!hits) return null;
     var uid = hits.length ? uidOf(hits[0].object) : null;
     if (!add) setSelection(uid);
-    else if (uid !== null) setMarks(marks.indexOf(uid) >= 0 ? marks.filter(function(u){ return u !== uid; }) : marks.concat(uid), 'i:' + uid);
+    else if (uid !== null) setMarksKeep(marks.indexOf(uid) >= 0 ? marks.filter(function(u){ return u !== uid; }) : marks.concat(uid), 'i:' + uid);
     return selUid;
   }
   view.addEventListener('pointerdown', function(e){ var v = vpAt(e.target); if (!v) return; act = v; down = {x: e.clientX, y: e.clientY, b: e.button}; });
@@ -829,7 +842,14 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (!d || d.b !== 0 || e.button !== 0) return;
     if (Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 4) return; // orbit drag, not a click
     if (snapSt !== 'off') snapClick(e.clientX, e.clientY); // snap mode: clicks only pick vertices
-    else pickAt(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
+    else {
+      // Assembly mode: dimensions are tested first (they draw on top of the parts). Plain click: select it alone, a miss clears the dimension
+      // selection. Ctrl/Cmd+click: toggle it in the selection (parts untouched); a miss toggles a part and keeps the dimension selection.
+      var add = e.ctrlKey || e.metaKey, chk = mode === 'assembly' && !tcBusy(), id = chk ? dimAt(e.clientX, e.clientY) : null;
+      if (chk && !add) selectDim(id);
+      if (add && id !== null) selectDim(id, true);
+      else if (id === null) pickAt(e.clientX, e.clientY, add);
+    }
   });
   // Ctrl + left-drag in Assembly mode = rubber-band box select: every instance whose projected world bbox touches the box is ADDED to the
   // marks (no occlusion test). Orbit and the gizmo are disabled for that drag (the capture listener runs before theirs); a Ctrl+click
@@ -880,8 +900,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       }
       if (hi[0] >= x0 && lo[0] <= x1 && hi[1] >= y0 && lo[1] <= y1) hit.push(i.uid);
     });
-    if (hit.length) setMarks(marks.concat(hit));
-    setStatus('Box select: ' + hit.length + ' added, ' + marks.length + ' marked');
+    if (hit.length) setMarksKeep(marks.concat(hit));
+    var dh = dimsInBox(x0, y0, x1, y1).filter(function(id){ return selDims.indexOf(id) < 0; });
+    if (dh.length) { selDims = selDims.concat(dh); renderDimList(); rebuildDims(); } // after setMarks, once, so the highlight shows
+    setStatus('Box select: ' + hit.length + ' parts, ' + dh.length + ' dims added');
   }
   // middle button pans: stop the browser's middle-click autoscroll (it starts from the compatibility mousedown / auxclick)
   view.addEventListener('mousedown', function(e){ if (e.button === 1 && vpAt(e.target)) e.preventDefault(); });
@@ -893,11 +915,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   function snapAMsg(){ return marks.length > 1 ? 'Snap: click a vertex on one of the ' + marks.length + ' marked parts (A); all of them move' : 'Snap: click a vertex on the part to MOVE (A)'; }
   function snapBMsg(){ return marks.length > 1 ? 'Snap: now click a vertex on an UNmarked part (B)' : 'Snap: now click a vertex on another part (B)'; }
   function clearMarkers(){
+    clearGhost();
     while (snapMarkers.children.length) { var m = snapMarkers.children.pop(); m.geometry.dispose(); m.material.dispose(); }
   }
   function addMarker(w, color){
     var b = assemblyBox(), r = b.isEmpty() ? 1.5 : Math.max(1.5, 0.015 * b.getSize(new THREE.Vector3()).length());
-    var m = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshBasicMaterial({color: color, depthTest: false, depthWrite: false}));
+    var m = new THREE.Mesh(new THREE.SphereGeometry(r * 0.5, 16, 12), new THREE.MeshBasicMaterial({color: color, depthTest: false, depthWrite: false}));
     m.renderOrder = 999; m.position.copy(w);
     snapMarkers.add(m);
   }
@@ -942,11 +965,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     snapSt = 'pickA'; snapA = snapB = null; clearMarkers(); setStatus(snapAMsg());
   }
 
-  // dimension tools ("Dim line" 2 vertices, "Dim angle" 3: arm end, apex, arm end): the vertex-snap machinery with snapSt = 'dim'
-  // (gizmo off, orbit on, Esc / Backspace / snapExit all shared); the tool stays armed after each dimension until toggled off or Esc
-  var DIM_MARK = [0xff2020, 0x20c020, 0x2080ff], DIM_COLOR = 0xd000d0, DIM_LABEL_PX = 22;
-  var DIM_STEPS = {dist: ['click the first vertex (1/2)', 'click the second vertex (2/2)'],
-    angle: ['click the end of the first arm (1/3)', 'click the apex (2/3)', 'click the end of the second arm (3/3)']};
+  // dimension tools ("Dim line" 2 vertices + placement, "Dim angle" 4 vertices (2 lines) + placement): the vertex-snap machinery with snapSt = 'dim'
+  // (gizmo off, orbit on, Esc / Backspace / snapExit all shared); the tool stays armed after each dimension until toggled off or Esc.
+  // The click made when dimPts.length = DIM_STEPS[tool].length - 1 (all vertices picked) is the placement click: no vertex pick, only the offset from the mouse ray.
+  var DIM_MARK = [0xff2020, 0x20c020, 0x2080ff, 0xffa000], DIM_COLOR = 0xd000d0, DIM_LABEL_PX = 22;
+  var DIM_STEPS = {dist: ['click the first vertex (1/2)', 'click the second vertex (2/2)', 'move the mouse and click to place the dimension line (3/3)'],
+    angle: ['click the START of line 1 (1/4)', 'click the END of line 1 (2/4)', 'click the START of line 2 (3/4)', 'click the END of line 2 (4/4)', 'move the mouse and click to place the angle (5/5)']};
   function dimMsg(){ return (dimTool === 'dist' ? 'Dim line: ' : 'Dim angle: ') + DIM_STEPS[dimTool][dimPts.length] + ' - Esc cancels, Backspace restarts'; }
   function dimStart(type){
     var again = snapSt === 'dim' && dimTool === type;
@@ -962,34 +986,250 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     $(type === 'dist' ? 'bDimL' : 'bDimA').setAttribute('aria-pressed', true);
     setStatus(dimMsg());
   }
+  function r4(c){ return Math.round(c * 1e4) / 1e4; }
   function dimClick(x, y){
-    var p = snapPick(x, y, built), k = p ? findInst(p.uid) : -1, g = k >= 0 ? instances[k].obj : null;
-    if (!g) { setStatus(dimMsg()); return; }
-    if (dimPts.some(function(q){ return q.w.distanceTo(p.w) < 1e-6; })) { setStatus('Dimension: that point is already picked, click another vertex'); return; }
-    var l = new THREE.Vector3().fromBufferAttribute(g.children[p.mesh].geometry.attributes.position, p.vi); // the vertex in part coordinates
-    dimPts.push({uid: p.uid, local: l.toArray().map(function(c){ return Math.round(c * 1e4) / 1e4; }), w: p.w});
-    addMarker(p.w, DIM_MARK[dimPts.length - 1]);
-    if (dimPts.length < DIM_STEPS[dimTool].length) { setStatus(dimMsg()); return; }
-    var d = {id: ++dimCounter, type: dimTool, pts: dimPts.map(function(q){ return {uid: q.uid, local: q.local}; })};
+    var place = dimPts.length === DIM_STEPS[dimTool].length - 1;
+    if (!place) {
+      var p = snapPick(x, y, built), k = p ? findInst(p.uid) : -1, g = k >= 0 ? instances[k].obj : null;
+      if (!g) { setStatus(dimMsg()); return; }
+      // angle: the two lines may share a vertex (a corner), so only the partner within the same line counts as a duplicate
+      if ((dimTool === 'angle' ? dimPts.slice(dimPts.length & ~1) : dimPts).some(function(q){ return q.w.distanceTo(p.w) < 1e-6; })) { setStatus('Dimension: that point is already picked, click another vertex'); return; }
+      var l = new THREE.Vector3().fromBufferAttribute(g.children[p.mesh].geometry.attributes.position, p.vi); // the vertex in part coordinates
+      dimPts.push({uid: p.uid, local: l.toArray().map(r4), w: p.w});
+      addMarker(p.w, DIM_MARK[dimPts.length - 1]);
+      if (dimPts.length < DIM_STEPS[dimTool].length) { setStatus(dimMsg()); dimHover(x, y); return; }
+    }
+    var d = {id: ++dimCounter, type: dimTool === 'angle' ? 'angle2' : 'dist', pts: dimPts.map(function(q){ return {uid: q.uid, local: q.local}; })};
+    if (place) d.off = dimPlaceOff(x, y).toArray().map(r4);
     dims.push(d); dimPts = []; clearMarkers();
     renderDimList(); rebuildDims(); commit();
     setStatus('Dim ' + d.id + ': ' + dimCalc(d).text + ' - ' + dimMsg());
   }
+  // dimension hover preview: while a dimension tool is armed, the 3 vertices of the triangle under the cursor show as candidate snap points (nearest = big
+  // yellow, others small white) and after the first pick a ghost arrow runs from the last picked point to the nearest candidate (dist tool: with live length).
+  // dimGhost is not in `built`: never picked/exported/framed.
+  var dimGhost = new THREE.Group();
+  scene.add(dimGhost);
+  function clearGhost(){
+    while (dimGhost.children.length) {
+      var o = dimGhost.children.pop();
+      if (!o.isSprite) o.geometry.dispose(); // all sprites share one static geometry
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  }
+  function dimHover(x, y){
+    clearGhost();
+    if (snapSt !== 'dim' || mode !== 'assembly') return;
+    var n = dimPts.length, b = assemblyBox(), r = b.isEmpty() ? 1.5 : Math.max(1.5, 0.015 * b.getSize(new THREE.Vector3()).length());
+    var seg = [], A, B, at, L, txt;
+    function line(p, q){ seg.push(p.x, p.y, p.z, q.x, q.y, q.z); }
+    if (n === DIM_STEPS[dimTool].length - 1) { // placement step: the complete dimension follows the mouse, no vertex candidates and no hit needed
+      if (dimTool === 'dist') {
+        A = dimPts[0].w; B = dimPts[1].w; L = A.distanceTo(B);
+        at = distSeg(A, B, dimPlaceOff(x, y), seg); txt = L.toFixed(1) + ' mm';
+      } else {
+        var G = angle2Geo(dimPts.map(function(q){ return q.w; }), dimPlaceOff(x, y));
+        if (!G) return;
+        seg = G.seg; at = G.at; txt = G.text;
+      }
+    } else {
+      if (dimTool === 'angle' && n >= 2) line(dimPts[0].w, dimPts[1].w); // line 1 is fixed: show it while line 2 is chosen
+      var hits = rayHits(x, y, built), h = hits && hits[0], ray;
+      if (h && h.face) {
+        var pos = h.object.geometry.attributes.position;
+        var C = [h.face.a, h.face.b, h.face.c].map(function(vi){ return new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(h.object.matrixWorld); });
+        var bi = 0;
+        C.forEach(function(v, i){ if (v.distanceTo(h.point) < C[bi].distanceTo(h.point)) bi = i; });
+        C.forEach(function(v, i){
+          var m = new THREE.Mesh(new THREE.SphereGeometry(i === bi ? r * 0.4 : r * 0.2, 12, 8),
+            new THREE.MeshBasicMaterial({color: i === bi ? 0xffd000 : 0xffffff, depthTest: false, depthWrite: false, transparent: true, opacity: i === bi ? 0.9 : 0.6}));
+          m.renderOrder = 998; m.position.copy(v); dimGhost.add(m);
+        });
+        B = C[bi];
+      } else if (n && (ray = rayAt(x, y))) { // empty space: the arrow follows the cursor on the camera-facing plane through the last picked point
+        B = ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(ray.direction.clone().negate(), dimPts[n - 1].w), new THREE.Vector3());
+      }
+      var u = n && B ? B.clone().sub(A = dimPts[n - 1].w) : null; L = u ? u.length() : 0;
+      if (L >= 1e-6) {
+        u.divideScalar(L);
+        var hl = Math.min(L * 0.25, 4 * r), e1 = dimPerp(u).multiplyScalar(hl * 0.35), e2 = u.clone().cross(e1).normalize().multiplyScalar(hl * 0.35), T = B.clone().addScaledVector(u, -hl);
+        line(A, B); [e1, e2].forEach(function(e){ line(B, T.clone().add(e)); line(B, T.clone().sub(e)); });
+        at = A.clone().add(B).multiplyScalar(0.5);
+        if (dimTool === 'dist') txt = L.toFixed(1) + ' mm';
+      }
+    }
+    if (!seg.length) return;
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+    var ln = new THREE.LineSegments(g, new THREE.LineBasicMaterial({color: DIM_COLOR, depthTest: false, transparent: true, opacity: 0.6}));
+    ln.renderOrder = 997; dimGhost.add(ln);
+    if (txt) { var lb = dimLabel(txt, at); lb.material.opacity = 0.75; dimGhost.add(lb); }
+  }
+  // hover (no button held) updates the preview once per animation frame; orbiting or leaving the view clears it
+  var hoverEv = null;
+  view.addEventListener('pointermove', function(e){
+    if (snapSt !== 'dim') return;
+    var v = vpAt(e.target);
+    if (!v || e.buttons) { hoverEv = null; clearGhost(); return; }
+    var first = !hoverEv; hoverEv = {x: e.clientX, y: e.clientY, v: v};
+    if (first) requestAnimationFrame(function(){ var q = hoverEv; hoverEv = null; if (q) { act = q.v; dimHover(q.x, q.y); } });
+  });
+  view.addEventListener('pointerleave', function(){ hoverEv = null; clearGhost(); });
   // world points + value of a dimension; null when one of its parts is gone
   function dimCalc(d){
     var W = d.pts.map(function(p){ var k = findInst(p.uid); return k < 0 ? null : new THREE.Vector3(p.local[0], p.local[1], p.local[2]).applyMatrix4(instances[k].matrix); });
     if (W.some(function(w){ return !w; })) return null;
     if (d.type === 'dist') return {W: W, text: W[0].distanceTo(W[1]).toFixed(1) + ' mm'};
+    if (d.type === 'angle2') { var G = angle2Geo(W, d.off ? new THREE.Vector3().fromArray(d.off) : null); return G && {W: W, text: G.text, G: G}; } // G: drawing for rebuildDims
     return {W: W, text: (W[0].clone().sub(W[1]).angleTo(W[2].clone().sub(W[1])) * 180 / Math.PI).toFixed(1) + '°'};
   }
   function dimPerp(u){ return u.clone().cross(Math.abs(u.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).normalize(); }
+  // offset of the dimension line for the mouse at client x, y: the mouse ray meets the plane through A that contains the line A-B and
+  // faces the camera as much as it can; only the part perpendicular to A-B is kept. Zero when there is no usable ray or plane.
+  function dimOff(A, B, x, y){
+    var ray = rayAt(x, y), u = B.clone().sub(A), zero = new THREE.Vector3();
+    if (!ray || u.lengthSq() < 1e-12) return zero;
+    u.normalize();
+    var n = ray.direction.clone().addScaledVector(u, -ray.direction.dot(u));
+    if (n.lengthSq() < 1e-12) return zero;
+    var Q = ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(n.normalize(), A), new THREE.Vector3());
+    if (!Q) return zero;
+    var v = Q.sub(A);
+    return v.addScaledVector(u, -v.dot(u));
+  }
+  // placement offset of the dimension being made, from the mouse at client x, y (dimPts holds all its vertices)
+  function dimPlaceOff(x, y){
+    if (dimTool === 'dist') return dimOff(dimPts[0].w, dimPts[1].w, x, y);
+    // angle: the mouse ray meets the plane through the lines' intersection C (normal n); off = Q - C. Zero when parallel, edge-on or no ray.
+    var zero = new THREE.Vector3(), G = angle2Geo(dimPts.map(function(q){ return q.w; }), null), ray = rayAt(x, y);
+    if (!G || !G.ok || !ray || Math.abs(ray.direction.dot(G.n)) < 1e-3) return zero;
+    var Q = ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(G.n, G.C), new THREE.Vector3());
+    return Q ? Q.sub(G.C) : zero;
+  }
+  // angle between two lines W0-W1 and W2-W3 (W: 4 Vector3; off: world vector Q - C or null). C = the lines' closest-approach midpoint, n = plane normal. The four sectors
+  // between the lines are told apart by the direction of off in the lines' plane; its length is the arc radius. -> {C, n, seg (flat line-segment endpoints), at (label), text, ok
+  // (false = parallel, no arc)}, or null for a zero-length line. Shared by dimCalc (saved dimensions) and the placement ghost.
+  function angle2Geo(W, off){
+    var u1 = W[1].clone().sub(W[0]), u2 = W[3].clone().sub(W[2]), seg = [], i;
+    if (u1.length() < 1e-9 || u2.length() < 1e-9) return null;
+    u1.normalize(); u2.normalize();
+    function line(p, q){ seg.push(p.x, p.y, p.z, q.x, q.y, q.z); }
+    var w0 = W[0].clone().sub(W[2]), b = u1.dot(u2), den = 1 - b * b;
+    if (den < 1e-9) { // parallel: 0 or 180 degrees, no arc; show the picked segments
+      var cen = new THREE.Vector3(); W.forEach(function(w){ cen.add(w); }); cen.multiplyScalar(0.25);
+      line(W[0], W[1]); line(W[2], W[3]);
+      return {C: cen, n: dimPerp(u1), seg: seg, at: cen.clone(), text: b > 0 ? '0.0°' : '180.0°', ok: false};
+    }
+    var d = u1.dot(w0), e = u2.dot(w0), s = (b * e - d) / den, t = (e - b * d) / den;
+    var C = W[0].clone().addScaledVector(u1, s).add(W[2].clone().addScaledVector(u2, t)).multiplyScalar(0.5);
+    var n = u1.clone().cross(u2).normalize(), e1 = u1, e2 = n.clone().cross(u1);
+    var phi = Math.atan2(u2.dot(e2), u2.dot(e1)), TAU = 2 * Math.PI;
+    var v = off ? off.clone().addScaledVector(n, -off.dot(n)) : new THREE.Vector3(), rho = v.length(), psi;
+    if (rho < 1e-6) { // no placement yet: sector 0 at a default radius
+      psi = phi / 2; rho = 0.5 * Math.max.apply(null, W.map(function(w){ return w.distanceTo(C); })); rho = Math.max(rho, 10);
+    } else psi = (Math.atan2(v.dot(e2), v.dot(e1)) + TAU) % TAU;
+    // rays from C: 0 = +u1, phi = +u2, PI = -u1, PI+phi = -u2 (lines alternate 1, 2); sector k runs from ray k to ray k+1 and measures phi or PI - phi
+    var ang = [0, phi, Math.PI, Math.PI + phi, TAU], dir = [u1, u2, u1.clone().negate(), u2.clone().negate()];
+    var k = psi < phi ? 0 : psi < Math.PI ? 1 : psi < Math.PI + phi ? 2 : 3, a0 = ang[k], a1 = ang[k + 1], span = a1 - a0;
+    function pt(a, r){ return C.clone().addScaledVector(e1, r * Math.cos(a)).addScaledVector(e2, r * Math.sin(a)); }
+    var prev = pt(a0, rho);
+    for (i = 1; i <= 24; i++) { var q = pt(a0 + span * i / 24, rho); line(prev, q); prev = q; }
+    var hl = Math.min(0.2 * rho * span, 5); // arrowheads at both arc ends, pointing outwards along the arc
+    [[a0, 1], [a1, -1]].forEach(function(z){
+      var E = pt(z[0], rho), tau = e1.clone().multiplyScalar(-Math.sin(z[0]) * z[1]).addScaledVector(e2, Math.cos(z[0]) * z[1]), r = E.clone().sub(C).divideScalar(rho);
+      var tip = E.clone().addScaledVector(tau, hl);
+      line(E, tip.clone().addScaledVector(r, hl * 0.35)); line(E, tip.clone().addScaledVector(r, -hl * 0.35));
+    });
+    // each line: from the farthest of its two picked points / the arc end on one side to the other, so it covers both
+    [[k, 0], [(k + 1) % 4, 1]].forEach(function(z){
+      var l = z[0] % 2, u = l ? u2 : u1, ts = [rho * dir[z[0]].dot(u)];
+      ts.push((W[2 * l].clone().sub(C)).dot(u), (W[2 * l + 1].clone().sub(C)).dot(u));
+      line(C.clone().addScaledVector(u, Math.min.apply(null, ts)), C.clone().addScaledVector(u, Math.max.apply(null, ts)));
+    });
+    return {C: C, n: n, seg: seg, at: pt((a0 + a1) / 2, rho), text: ((k % 2 ? Math.PI - phi : phi) * 180 / Math.PI).toFixed(1) + '°', ok: true};
+  }
+  // distance dimension geometry shared by saved dimensions and the ghost: line W0+off .. W1+off with end ticks, plus extension lines
+  // when off is not zero. Appends to seg (flat xyz pairs); returns the label position.
+  function distSeg(W0, W1, off, seg){
+    var P = [W0.clone().add(off), W1.clone().add(off)], dir = P[1].clone().sub(P[0]), L = dir.length(), h = Math.min(3, L * 0.08);
+    function line(p, q){ seg.push(p.x, p.y, p.z, q.x, q.y, q.z); }
+    line(P[0], P[1]);
+    if (L > 1e-9) {
+      dir.divideScalar(L);
+      var e1 = dimPerp(dir).multiplyScalar(h), e2 = dir.clone().cross(e1).normalize().multiplyScalar(h);
+      P.forEach(function(p){ line(p.clone().sub(e1), p.clone().add(e1)); line(p.clone().sub(e2), p.clone().add(e2)); }); // end ticks
+    }
+    if (off.lengthSq() > 1e-12) { line(W0, P[0]); line(W1, P[1]); }
+    return P[0].clone().add(P[1]).multiplyScalar(0.5);
+  }
+  // the dimension whose line (< 6 px) or label pill is under client x, y in the clicked viewport (nearest wins), else null
+  function dimPx(r, a, i){ // client px (viewport rect r, act.cam matrices already updated) of a[i..i+2]; null behind the camera
+    dimV.set(a[i], a[i + 1], a[i + 2]).project(act.cam);
+    return dimV.z > 1 ? null : [r.left + (dimV.x + 1) / 2 * r.width, r.top + (1 - dimV.y) / 2 * r.height];
+  }
+  function segHitsRect(p, q, x0, y0, x1, y1){ // Liang-Barsky: does segment p-q touch the rect?
+    var t0 = 0, t1 = 1, d = [q[0] - p[0], q[1] - p[1]], lo = [x0, y0], hi = [x1, y1], i, a, b, s;
+    for (i = 0; i < 2; i++) {
+      if (d[i] === 0) { if (p[i] < lo[i] || p[i] > hi[i]) return false; continue; }
+      a = (lo[i] - p[i]) / d[i]; b = (hi[i] - p[i]) / d[i];
+      if (a > b) { s = a; a = b; b = s; }
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      if (t0 > t1) return false;
+    }
+    return true;
+  }
+  // ids of the dimensions touching the client-px box in the clicked viewport: label centre inside, or any line segment crossing/inside it
+  function dimsInBox(x0, y0, x1, y1){
+    var r = act.el.getBoundingClientRect(), out = [];
+    if (!r.width || !r.height) return out;
+    act.cam.updateMatrixWorld();
+    Object.keys(dimGeo).forEach(function(id){
+      var G = dimGeo[id], c = dimPx(r, G.at.toArray(), 0), k, p, q, hit = !!c && c[0] >= x0 && c[0] <= x1 && c[1] >= y0 && c[1] <= y1;
+      for (k = 0; k < G.seg.length && !hit; k += 6) {
+        p = dimPx(r, G.seg, k); q = dimPx(r, G.seg, k + 3);
+        hit = !!p && !!q && segHitsRect(p, q, x0, y0, x1, y1);
+      }
+      if (hit) out.push(+id);
+    });
+    return out;
+  }
+  function dimAt(x, y){
+    var r = act.el.getBoundingClientRect(), best = null, bd = 6;
+    if (!r.width || !r.height) return null;
+    act.cam.updateMatrixWorld();
+    function px(a, i){ return dimPx(r, a, i); }
+    Object.keys(dimGeo).forEach(function(id){
+      var G = dimGeo[id], dd = Infinity, c = px(G.at.toArray(), 0), k;
+      if (c && Math.abs(x - c[0]) <= G.aspect * DIM_LABEL_PX / 2 && Math.abs(y - c[1]) <= DIM_LABEL_PX / 2) dd = 0;
+      for (k = 0; k < G.seg.length && dd > 0; k += 6) {
+        var p = px(G.seg, k), q = px(G.seg, k + 3);
+        if (!p || !q) continue;
+        var ex = q[0] - p[0], ey = q[1] - p[1], l2 = ex * ex + ey * ey, t = l2 ? Math.max(0, Math.min(1, ((x - p[0]) * ex + (y - p[1]) * ey) / l2)) : 0;
+        dd = Math.min(dd, Math.hypot(x - p[0] - t * ex, y - p[1] - t * ey));
+      }
+      if (dd < bd) { bd = dd; best = +id; }
+    });
+    return best;
+  }
+  // dimension selection (3D click, list row, Esc/Delete): null clears; add toggles id (parts kept); otherwise it replaces everything
+  // (drops the part selection; a plain setMarks drops the dimension selection again)
+  function selectDim(id, add){
+    if (id === null) { if (!selDims.length) return; selDims = []; }
+    else if (add) selDims = selDims.indexOf(id) < 0 ? selDims.concat(id) : selDims.filter(function(q){ return q !== id; });
+    else { selDims = [id]; setMarks([]); }
+    renderDimList(); rebuildDims();
+    var d = selDims.length === 1 && dims.filter(function(q){ return q.id === selDims[0]; })[0], c = d && dimCalc(d);
+    if (c) setStatus('Dim ' + d.id + ': ' + c.text + ' selected - Delete removes it');
+    else if (selDims.length > 1) setStatus(selDims.length + ' dimensions selected - Delete removes them');
+  }
   // text on a light pill as a sprite; sizeAttenuation off + a per-camera scale in onBeforeRender keeps it LABEL_PX tall in every viewport
   // (perspective and orthographic): the sprite shader maps scale s to s * P[1][1] / 2 of the viewport height in both camera types
-  function dimLabel(text, at){
+  function dimLabel(text, at, sel){
     var c = document.createElement('canvas'), x = c.getContext('2d'), f = '600 28px system-ui, "Segoe UI", sans-serif';
     x.font = f; c.width = Math.ceil(x.measureText(text).width) + 24; c.height = 44;
     x.font = f; x.textBaseline = 'middle'; x.textAlign = 'center';
-    x.fillStyle = '#fff6b8'; x.strokeStyle = '#a000a0'; x.lineWidth = 3;
+    x.fillStyle = '#fff6b8'; x.strokeStyle = sel ? '#ff8c00' : '#a000a0'; x.lineWidth = sel ? 5 : 3;
     x.beginPath(); x.moveTo(22, 2); x.lineTo(c.width - 22, 2); x.arc(c.width - 22, 22, 20, -Math.PI / 2, Math.PI / 2); x.lineTo(22, 42); x.arc(22, 22, 20, Math.PI / 2, -Math.PI / 2); x.closePath(); x.fill(); x.stroke();
     x.fillStyle = '#1d2330'; x.fillText(text, c.width / 2, 23);
     var s = new THREE.Sprite(new THREE.SpriteMaterial({map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true}));
@@ -1012,23 +1252,16 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
   // rebuilt (cheap) on every instance change/move; hidden in Preview
   function rebuildDims(){
-    clearDimGroup();
+    clearDimGroup(); dimGeo = {};
     dimGroup.visible = mode === 'assembly';
     if (!dimGroup.visible) return;
     dims.forEach(function(d){
       var c = dimCalc(d); if (!c) return;
       var W = c.W, seg = [], at = new THREE.Vector3();
       function line(p, q){ seg.push(p.x, p.y, p.z, q.x, q.y, q.z); }
-      if (d.type === 'dist') {
-        var dir = W[1].clone().sub(W[0]), L = dir.length(), h = Math.min(3, L * 0.08);
-        line(W[0], W[1]);
-        if (L > 1e-9) {
-          dir.divideScalar(L);
-          var e1 = dimPerp(dir).multiplyScalar(h), e2 = dir.clone().cross(e1).normalize().multiplyScalar(h);
-          W.forEach(function(p){ line(p.clone().sub(e1), p.clone().add(e1)); line(p.clone().sub(e2), p.clone().add(e2)); }); // end ticks
-        }
-        at.copy(W[0]).add(W[1]).multiplyScalar(0.5);
-      } else {
+      if (d.type === 'dist') at.copy(distSeg(W[0], W[1], d.off ? new THREE.Vector3().fromArray(d.off) : new THREE.Vector3(), seg));
+      else if (d.type === 'angle2') { seg = c.G.seg; at.copy(c.G.at); }
+      else {
         var P = W[1], a = W[0].clone().sub(P), b = W[2].clone().sub(P), la = a.length(), lb = b.length();
         line(P, W[0]); line(P, W[2]);
         at.copy(P);
@@ -1045,23 +1278,28 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       }
       var g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
-      var ln = new THREE.LineSegments(g, new THREE.LineBasicMaterial({color: DIM_COLOR, depthTest: false, transparent: true}));
+      var sel = selDims.indexOf(d.id) >= 0, ln = new THREE.LineSegments(g, new THREE.LineBasicMaterial({color: sel ? 0xff8c00 : DIM_COLOR, depthTest: false, transparent: true})), tag = dimLabel(c.text, at, sel); // not `lb`: the angle branch uses that name
       ln.renderOrder = 997;
-      dimGroup.add(ln, dimLabel(c.text, at));
+      dimGroup.add(ln, tag);
+      dimGeo[d.id] = {seg: seg, at: at, aspect: tag.userData.aspect};
       if (dimEls[d.id]) dimEls[d.id].textContent = 'Dim ' + d.id + ': ' + c.text; // list row follows live
     });
   }
   function renderDimList(){
     var L = $('dimList'); L.textContent = ''; dimEls = {};
+    selDims = selDims.filter(function(id){ return dims.some(function(d){ return d.id === id; }); }); // selected dimensions that are gone (deleted, undone, part removed, file loaded) are dropped
     dims.forEach(function(d){
       var c = dimCalc(d), row = document.createElement('div'), t = document.createElement('span'), x = document.createElement('button');
-      row.className = 'dimrow'; t.textContent = 'Dim ' + d.id + ': ' + (c ? c.text : '?'); dimEls[d.id] = t;
+      row.className = 'dimrow' + (selDims.indexOf(d.id) >= 0 ? ' sel' : ''); t.textContent = 'Dim ' + d.id + ': ' + (c ? c.text : '?'); dimEls[d.id] = t;
+      t.onclick = function(e){ selectDim(d.id, e.ctrlKey || e.metaKey || e.shiftKey); };
       x.className = 'xbtn'; x.textContent = '×'; x.title = 'Delete dimension'; x.setAttribute('aria-label', 'Delete dimension ' + d.id);
       x.onclick = function(){ dims = dims.filter(function(q){ return q !== d; }); renderDimList(); rebuildDims(); commit(); };
       row.appendChild(t); row.appendChild(x); L.appendChild(row);
     });
     $('dimBox').hidden = !dims.length;
+    updateDel();
   }
+  function updateDel(){ $('bDel').disabled = !marks.length && !selDims.length; } // Delete works on marked parts and/or selected dimensions
   function snapClick(x, y){
     if (snapSt === 'dim') { dimClick(x, y); return; }
     if (snapSt === 'pickA') {
@@ -1139,7 +1377,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (open) g.list.forEach(function(i){ L.appendChild(row('i:' + i.uid, [i.uid], name + ' #' + i.uid, 'sub')); });
     });
     $('asmCount').textContent = instances.length + (instances.length === 1 ? ' instance' : ' instances');
-    $('bDel').disabled = !marks.length;
+    updateDel();
     var s = L.querySelector('.sel'); if (s) s.scrollIntoView({block:'nearest'});
   }
 
@@ -1207,7 +1445,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     var at = {}; // uid -> index in the saved instances (uids are new on load)
     instances.forEach(function(i, k){ at[i.uid] = k; });
     var dd = dims.filter(function(d){ return d.pts.every(function(p){ return p.uid in at; }); }).map(function(d){
-      return {type: d.type, pts: d.pts.map(function(p){ return {inst: at[p.uid], local: p.local.slice()}; })};
+      var o = {type: d.type, pts: d.pts.map(function(p){ return {inst: at[p.uid], local: p.local.slice()}; })};
+      if (d.off) o.off = d.off.slice();
+      return o;
     });
     return EVEIO.serializeAssembly(instances.map(function(i){ return {part: i.partId, matrix: Array.from(i.matrix.elements)}; }), userParts, dd);
   }
@@ -1259,7 +1499,11 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     }
     add.forEach(function(p){ delete removedParts[p.id]; userParts.push(p); });
     instances = recs.map(function(x){ return {uid: ++uidCounter, partId: x.partId, matrix: new THREE.Matrix4().fromArray(x.m), obj: null}; });
-    dims = r.dimensions.map(function(d){ return {id: ++dimCounter, type: d.type, pts: d.pts.map(function(p){ return {uid: instances[p.inst].uid, local: p.local}; })}; });
+    dims = r.dimensions.map(function(d){
+      var o = {id: ++dimCounter, type: d.type, pts: d.pts.map(function(p){ return {uid: instances[p.inst].uid, local: p.local}; })};
+      if (d.off) o.off = d.off;
+      return o;
+    });
     marks = []; anchorKey = null;
     onLibraryChanged();
     rebuildInstances();
@@ -1526,10 +1770,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     gizmoMove: function(){ if (mode === 'assembly') setGizmoMode('translate'); },
     gizmoRotate: function(){ if (mode === 'assembly') setGizmoMode('rotate'); },
     snapVertex: function(){ if (mode === 'assembly') snapStart(); },
-    deleteSel: function(){ if (mode === 'assembly' && marks.length) deleteSelected(); },
+    deleteSel: function(){ if (mode === 'assembly' && (marks.length || selDims.length)) deleteSelected(); },
     undo: undo, redo: redo,
     deselect: function(){
-      if (mode === 'assembly') setSelection(null);
+      if (mode === 'assembly') { setSelection(null); selectDim(null); }
       if (current) { pmarks = [current.id]; pAnchor = current.id; markSel(); }
     },
     toggleMode: function(){ setMode(mode === 'preview' ? 'assembly' : 'preview'); },
@@ -1851,7 +2095,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     },
     dimMode: function(type){ if (type === 'dist' || type === 'angle') dimStart(type); else snapExit(); return {state: snapSt, tool: dimTool, picked: dimPts.length}; },
     dimClick: function(x, y){ if (snapSt === 'dim') dimClick(x, y); return {picked: dimPts.length, dims: dims.length}; },
-    dims: function(){ return dims.map(function(d){ var c = dimCalc(d); return {id: d.id, type: d.type, text: c && c.text, pts: d.pts, world: c && c.W.map(function(w){ return w.toArray(); })}; }); },
+    dims: function(){ return dims.map(function(d){ var c = dimCalc(d); return {id: d.id, type: d.type, text: c && c.text, pts: d.pts, off: d.off, world: c && c.W.map(function(w){ return w.toArray(); })}; }); },
     dimScene: function(){ return {children: dimGroup.children.length, visible: dimGroup.visible, inBuilt: built.some(function(g){ return g === dimGroup; })}; },
     // client px of the vertex of instance `uid` with part-local coordinates `local` (single view)
     localScreen: function(uid, local){

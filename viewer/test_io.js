@@ -609,6 +609,47 @@ test('assembly JSON: dimensions round trip (distance and angle)', function () {
   assert.strictEqual(JSON.parse(IO.serializeAssembly(TWO, [], [])).dimensions, undefined, 'no key without dimensions');
 });
 
+test('assembly JSON: dimension line offset (off) round trips and is omitted when absent', function () {
+  var dims = [{ type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: [0, 3.5, -1] }, { type: 'dist', pts: [dimPt(0, 3), dimPt(1, 4)] }];
+  var s = IO.serializeAssembly(TWO, [], dims);
+  assert.deepStrictEqual(JSON.parse(s).dimensions, dims);
+  assert.ok(!('off' in JSON.parse(s).dimensions[1]), 'no off key when absent');
+  var r = IO.parseAssemblyJSON(s, { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, dims);
+  assert.ok(!('off' in r.dimensions[1]), 'no off key when absent');
+  r.dimensions[0].off[0] = 99;
+  assert.strictEqual(dims[0].off[0], 0, 'parsed copy, not the input');
+});
+
+test('assembly JSON: angle2 (4 points + off) round trips; with 3 points it is dropped with a warning', function () {
+  var a2 = { type: 'angle2', pts: [dimPt(0, 1), dimPt(1, 2), dimPt(0, 3), dimPt(1, 4)], off: [1, -2, 0.5] };
+  var s = IO.serializeAssembly(TWO, [], [a2]);
+  assert.deepStrictEqual(JSON.parse(s).dimensions, [a2]);
+  var r = IO.parseAssemblyJSON(s, { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, [a2]);
+  assert.deepStrictEqual(r.warnings, []);
+  var bad = { type: 'angle2', pts: [dimPt(0, 1), dimPt(1, 2), dimPt(0, 3)] };
+  var r2 = IO.parseAssemblyJSON(asmText({ instances: TWO, dimensions: [bad, a2] }), { knownIds: KNOWN });
+  assert.deepStrictEqual(r2.dimensions, [a2]);
+  assert.ok(/dimension 0: type "angle2" needs exactly 4 points, dropped/.test(r2.warnings[0]), r2.warnings.join('|'));
+  assert.throws(function () { IO.serializeAssembly(TWO, [], [bad]); }, /needs exactly 4 points/);
+});
+
+test('assembly JSON: a bad off drops the dimension with a warning; serialize rejects it', function () {
+  var good = { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: [1, 2, 3] };
+  var bad = [
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: [1, 2] },        // wrong length
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: ['NaN', 0, 0] }, // not a number
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: [0, null, 0] },  // NaN/Infinity survive JSON only as null
+    { type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: 'x' }
+  ];
+  var r = IO.parseAssemblyJSON(asmText({ instances: TWO, dimensions: [bad[0], good].concat(bad.slice(1)) }), { knownIds: KNOWN });
+  assert.deepStrictEqual(r.dimensions, [good]);
+  assert.strictEqual(r.warnings.length, bad.length);
+  r.warnings.forEach(function (m) { assert.ok(/^Assembly JSON: dimension \d+: off must be 3 finite numbers, dropped$/.test(m), m); });
+  assert.throws(function () { IO.serializeAssembly(TWO, [], [{ type: 'dist', pts: [dimPt(0, 1), dimPt(1, 2)], off: [NaN, 0, 0] }]); }, /dimension 0: off must be 3 finite numbers/);
+});
+
 test('assembly JSON: an old file without dimensions loads with an empty list', function () {
   var r = IO.parseAssemblyJSON(asmText({}), { knownIds: KNOWN });
   assert.deepStrictEqual(r.dimensions, []);

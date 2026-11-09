@@ -42,7 +42,7 @@ Assembly mode "Reset view" and "Frame all" frame the whole assembly and "Wirefra
 | Snap | toggle for the bounding-box snap (default off; key Z), see "Snap" below. The gizmo works in the part's local axes |
 | Snap vertex | "Snap vertex" or S (Assembly mode, at least 2 parts), see below |
 | Dim line | "Dim line" (Assembly mode, no default key): distance between 2 mesh vertices, see "Dimensions" below |
-| Dim angle | "Dim angle" (Assembly mode, no default key): angle between 3 mesh vertices, see "Dimensions" below |
+| Dim angle | "Dim angle" (Assembly mode, no default key): angle between two lines (4 mesh vertices + placement click), see "Dimensions" below |
 | Delete | "Delete" or Del removes the selected (marked) parts |
 | Undo / Redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z (also the buttons; 100 steps) |
 
@@ -63,10 +63,12 @@ parts. They are toggles, mutually exclusive with each other and with Snap vertex
 and the cursor is a crosshair (orbit works), and the status line names the point to click next.
 - **Dim line**: click 2 vertices (they may belong to different parts); the distance is shown in mm (1 decimal) on a
   magenta line with end ticks and a label at the middle.
-- **Dim angle**: click the end of the first arm, the apex, then the end of the second arm; the angle at the apex between the
-  two arms is shown in degrees (1 decimal) with both arms and an arc.
+- **Dim angle**: measures the angle between two lines. Click 2 vertices for line 1 and 2 vertices for line 2, then move the
+  mouse (a preview follows) and click to place the arc; the mouse picks the radius and which of the 4 sectors between the
+  lines is measured (e.g. 36.0° or its supplement 144.0°). Both lines are drawn extended to the arc, with arrowheads and a
+  degree label (1 decimal). Parallel lines give 0.0° or 180.0° without an arc.
 
-A click picks the nearest vertex of the clicked triangle, as in Snap vertex. A dimension is created after its last point
+A click picks the nearest vertex of the clicked triangle, as in Snap vertex. A dimension is created after its last click
 (one undo step) and the tool stays armed for the next one; Esc (or the button again) leaves it, Backspace restarts the
 current dimension. The "Dimensions" list in the Assembly panel shows one row per dimension (`Dim 1: 25.4 mm`, `Dim 2: 90.0°`,
 live while you drag) with a × button that deletes it (one undo step).
@@ -163,9 +165,10 @@ Instances with an unknown part id are skipped and reported. The whole load is on
 
 Dimensions are saved in an optional `dimensions` array (old files without it load as before):
 
-    "dimensions": [{"type": "dist" | "angle", "pts": [{"inst": <index in "instances">, "local": [x, y, z]}, ...]}]
+    "dimensions": [{"type": "dist" | "angle" | "angle2", "pts": [{"inst": <index in "instances">, "local": [x, y, z]}, ...], "off": [x, y, z]}]
 
-`dist` has 2 points, `angle` 3 (arm end, apex, arm end). `local` is the vertex in the part's own coordinates and `inst` the
+`dist` has 2 points, `angle2` 4 (line 1 start/end, line 2 start/end; the current Dim angle tool), `angle` 3 (arm end, apex, arm end;
+older files). `off` is optional (dist: shift of the dimension line; angle2: where the arc was placed, relative to the lines' intersection). `local` is the vertex in the part's own coordinates and `inst` the
 position of its instance in the saved `instances` array (instances get new ids on load). Invalid entries (wrong point count,
 bad index, instance that was skipped) are dropped with a warning; loading never fails because of them.
 
@@ -182,7 +185,7 @@ Unit tests for `viewer/io.js` (parsers, export, JSON, keyboard bindings); prints
 - [ ] Move a part (W) and rotate it (E) with the gizmo; orbiting still works when not on the gizmo
 - [ ] Snap vertex (S): click a vertex on beam A, then on beam B; A jumps onto B
 - [ ] Ctrl+Z undoes the snap and the moves, Ctrl+Y redoes them
-- [ ] Dim line: click a vertex on each of two parts: a magenta line with a mm label and a row in "Dimensions"; move a part: the value follows; Dim angle on 3 vertices of a box corner reads 90.0°; Esc leaves the tool; undo removes the dimension; Save JSON + Load JSON keeps it
+- [ ] Dim line: click a vertex on each of two parts: a magenta line with a mm label and a row in "Dimensions"; move a part: the value follows; Dim angle on two box edges meeting at a corner (2+2 vertices, then place) reads 90.0° (or 90.0° in the other sectors); Esc leaves the tool; undo removes the dimension; Save JSON + Load JSON keeps it
 - [ ] Delete a part, undo brings it back
 - [ ] Import a STL and an OBJ(+MTL): they appear under "Imported", preview, can be added and moved
 - [ ] Remove an imported part with ×, confirm; undo brings back the part and its instances
