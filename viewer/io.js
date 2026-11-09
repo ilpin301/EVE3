@@ -561,7 +561,8 @@
     { id: 'wireframe', label: 'Toggle wireframe', keys: ['X'] },
     { id: 'grid', label: 'Toggle grid', keys: ['G'] },
     { id: 'autoRotate', label: 'Toggle auto-rotate', keys: ['T'] },
-    { id: 'addToAssembly', label: 'Add to assembly', keys: ['Ctrl+Enter'] }
+    { id: 'addToAssembly', label: 'Add to assembly', keys: ['Ctrl+Enter'] },
+    { id: 'help', label: 'Help', keys: ['F1'] }
   ];
   var FIXED_KEYS = ['ArrowUp', 'ArrowDown', 'Backspace']; // hard-wired (list stepping, snap re-pick): not bindable
   var MOD_NAMES = ['Ctrl', 'Alt', 'Shift', 'Meta', 'Control', 'AltGraph'];

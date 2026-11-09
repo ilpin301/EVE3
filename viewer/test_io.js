@@ -849,6 +849,18 @@ test('keys: Space maps to toggleMax (maximize / restore view)', function () {
   assert.strictEqual(IO.findConflict(d, 'frameAll', 'Space'), 'toggleMax');
 });
 
+test('keys: F1 maps to help', function () {
+  var d = IO.defaultBindings();
+  assert.deepStrictEqual(d.help, ['F1']);
+  assert.strictEqual(act(d, 'F1'), 'help');
+  assert.strictEqual(act(d, 'F1', { ctrlKey: true }), null, 'Ctrl+F1 is not bound');
+  assert.deepStrictEqual(IO.mergeBindings({ help: ['F1'] }).help, ['F1'], 'saved F1 survives normalizing');
+  assert.strictEqual(IO.findConflict(d, 'frameAll', 'F1'), 'help');
+  var m = IO.mergeBindings({ help: ['H'] });
+  assert.strictEqual(IO.matchAction(m, 'H'), 'help');
+  assert.strictEqual(IO.matchAction(m, 'F1'), null, 'rebinding frees F1');
+});
+
 test('keys: Q switches mode, 4 toggles four view, Alt+Enter toggles full screen (free defaults, conflicts handled)', function () {
   var d = IO.defaultBindings();
   assert.deepStrictEqual([d.toggleMode, d.fourView, d.fullscreen], [['Q'], ['4'], ['Alt+Enter']]);

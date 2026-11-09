@@ -62,10 +62,21 @@ summary{cursor:pointer;font-weight:600;padding:4px 2px;color:var(--muted);user-s
 .item.grp{font-weight:600}
 .item.sub{padding-left:26px}
 .spacer{margin-left:auto}
-#setBack{position:fixed;inset:0;z-index:10;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
-#setBack[hidden]{display:none}
-#setBox{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:16px;width:min(560px,94vw);max-height:90vh;overflow:auto}
-#setBox h2{margin:0 0 8px;font-size:16px}
+#setBack,#helpBack{position:fixed;inset:0;z-index:10;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
+#setBack[hidden],#helpBack[hidden]{display:none}
+#setBox,#helpBox{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:16px;width:min(560px,94vw);max-height:90vh;overflow:auto}
+#setBox h2,#helpBox h2{margin:0 0 8px;font-size:16px}
+#helpBox{width:min(680px,94vw);display:flex;flex-direction:column;overflow:hidden}
+#helpBody{flex:1;min-height:0;overflow:auto;outline:none;margin-bottom:8px}
+#helpBody details{margin:0;border-top:1px solid var(--border)}
+#helpBody summary{color:var(--text);padding:6px 2px}
+#helpBody ul{margin:0 0 8px;padding-left:22px}
+#helpBody li{margin:2px 0}
+#helpBody p{margin:4px 0 8px}
+#helpBody table{border-collapse:collapse;width:100%;margin:0 0 8px}
+#helpBody th,#helpBody td{text-align:left;padding:3px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+#helpBody th{color:var(--muted);font-weight:600}
+#helpBody td+td{white-space:nowrap;font-family:ui-monospace,Consolas,monospace;font-size:13px}
 #setBox h3{margin:10px 0 4px;font-size:13px}
 .tabs{display:flex;gap:6px;margin:0 0 8px}
 .tabs button[aria-selected="true"]{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
@@ -151,6 +162,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   </div>
   <button id="bFull" class="spacer" aria-pressed="false">Full screen</button>
   <button id="bSettings">Settings</button>
+  <button id="bHelp" aria-label="Help" title="Help (F1)">?</button>
 </header>
 <main>
   <aside>
@@ -216,6 +228,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     </div>
     <div id="setMsg" class="muted" aria-live="polite"></div>
     <div class="toolbar"><button id="setClose">Close</button></div>
+  </div>
+</div>
+<div id="helpBack" hidden>
+  <div id="helpBox" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">EVE3 Edit - Help</h2>
+    <div id="helpBody" tabindex="-1"></div>
+    <div class="toolbar"><button id="helpClose">Close</button></div>
   </div>
 </div>
 <footer>Geometry from the LDraw Parts Library (CC BY 4.0), original EV3 shapes by the LEGO MINDSTORMS Team. Not an official LEGO product.</footer>
@@ -2002,14 +2021,14 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     toggleMax: toggleMax, fourView: clickBtn('bFour'), fullscreen: clickBtn('bFull'),
     snap15: clickBtn('bSnapR'), snap1mm: clickBtn('bSnapT'), smartSnap: clickBtn('bSnapF'),
     frameAll: clickBtn('bFrameAll'), resetView: clickBtn('bReset'), wireframe: clickBtn('bWire'),
-    grid: clickBtn('bGrid'), autoRotate: clickBtn('bRot'), addToAssembly: clickBtn('bAdd')
+    grid: clickBtn('bGrid'), autoRotate: clickBtn('bRot'), addToAssembly: clickBtn('bAdd'), help: clickBtn('bHelp')
   };
   var TITLES = {bPrev: ['toggleMode', 'Preview mode'], bAsm: ['toggleMode', 'Assembly mode'], bFour: ['fourView', 'Four view'], bFull: ['fullscreen', 'Full screen'], bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'], bResetT: ['resetTransform', 'Reset transform'],
     bSnapR: ['snap15', function(){ return 'Snap ' + ROT_STEP + '°'; }], bSnapT: ['snap1mm', 'Snap to nearby bounding boxes'],
     bSnapF: ['smartSnap', 'Smart snap: align hole and shaft axes on release'],
     bDel: ['deleteSel', 'Delete'], bUndo: ['undo', 'Undo'], bRedo: ['redo', 'Redo'], bFrameAll: ['frameAll', 'Frame all'],
     bReset: ['resetView', 'Reset view'], bWire: ['wireframe', 'Wireframe'], bGrid: ['grid', 'Grid + axes'],
-    bRot: ['autoRotate', 'Auto-rotate'], bAdd: ['addToAssembly', 'Add to assembly']};
+    bRot: ['autoRotate', 'Auto-rotate'], bAdd: ['addToAssembly', 'Add to assembly'], bHelp: ['help', 'Help']};
   function applyTitles(){
     var mk = bindings.toggleMax.length ? ' (' + bindings.toggleMax.join(' / ') + ')' : '';
     V4.forEach(function(v){ v.el.querySelector('.vpmax').title = 'Maximize / restore this view' + mk; v.el.querySelector('.vpl').title = 'Double-click: maximize / restore' + mk; });
@@ -2112,10 +2131,94 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   };
   $('setResetAll').onclick =function(){ capId = null; bindings = EVEIO.mergeBindings(null); setMsg('All shortcuts reset.'); saveKeys(); };
 
+  // Help dialog: static prose below; rebuilt on every open so the shortcut table shows the live bindings ('@keys' marks where it goes)
+  var HELP = [
+    ['Quick start', [
+      'Keys named in this text are the defaults; "Keyboard shortcuts" below lists your current ones.',
+      'Preview mode shows one part, Assembly mode all placed parts on a 400 mm grid. Switch with the header buttons or Q.',
+      'Pick a part in the left list (Up/Down step through it), then "Add to assembly" (Ctrl+Enter), or drag it onto the 3D view or the Assembly panel. A drop in Preview mode switches to Assembly.',
+      'Click a part in the 3D view or in the Assembly list to select it, then drag the gizmo: arrows move, rings rotate. Ctrl+Z undoes.']],
+    ['Mouse and camera', [
+      'Left-drag orbits, middle-drag (or Shift + left-drag) pans, the wheel zooms.',
+      'Right-click (without dragging) in the 3D view or the Assembly list opens the command menu; in the part list it shows the edit commands only.',
+      'Click selects, a click on empty space deselects. Ctrl+click toggles a part; Shift+click marks a range in the lists.',
+      'Ctrl + left-drag in the 3D view (Assembly mode) draws a box: every part it touches is added to the selection. Esc cancels the drag.',
+      'Hold Alt when you start a gizmo drag to copy: the originals stay, the copies move and become the selection.',
+      'Four view: double-click a viewport label or press its "Max" button to maximize or restore it. Space maximizes the viewport under the pointer, or restores.',
+      'Selecting re-aims the orbit at the selection (Settings > "Autofocus to selected").']],
+    ['Transform', [
+      'Move (W) / Rotate (E) set the gizmo mode. One part uses its own axes; several marked parts share one gizmo at their centre, in world axes. Each drag is one undo step.',
+      '"Snap 15°" (A) makes rotations snap in steps; the step size is in Settings > Settings.',
+      'Alt / Shift / Ctrl + wheel rotates the selection about the world X / Y / Z axis through its centre, one snap step per notch. While the key is held a ghost ring (red X, green Y, blue Z) shows the plane, and its arrows point the way one wheel-up notch turns.',
+      '"Reset transform" puts the rotation back to the default orientation; each part\'s centre stays. No default key (bindable).']],
+    ['Snapping', [
+      '"Snap" (Z), bounding-box snap: while dragging, the box edges or centres align with a neighbour within 4 mm (orange outline); rotations snap to right angles within 5°.',
+      '"Smart snap" (D) aligns shaft and hole axes: round pins fit round holes, cross axles fit cross or round holes, and the shaft must not be thicker than the hole. During the drag cyan lines mark the matched axes and a ghost shows where the parts will land; on release the axes become collinear, the shaft end stops flush with the hole when close (depth stop), and cross on cross turns to the nearest 90°. Distance and angle tolerances are in Settings. Imported STL/OBJ parts never smart-snap.',
+      '"Snap vertex" (S): click a vertex on the part to move (A), then a vertex on another part (B); A moves onto B (translation only). Backspace re-picks A, Esc or S cancels.']],
+    ['Dimensions', [
+      'Assembly mode, no default keys. "Dim line": click 2 vertices for a distance in mm.',
+      '"Dim angle": click 2 vertices for line 1, 2 for line 2, then click to place the arc; the mouse position picks the radius and which angle is measured.',
+      'The tool stays armed for the next one: Esc or the button leaves it, Backspace restarts the current dimension.',
+      'Dimensions follow their parts. Click one in the 3D view or in the "Dimensions" list to select it (Ctrl/Shift+click adds); Delete removes the selected ones, × removes one. Not exported to STL/OBJ.']],
+    ['Parts list', [
+      'The search box filters by part name and category name.',
+      'Categories open and close; "Collapse all" closes all of them. "+ Category" adds your own (pencil renames, × deletes). Mark parts (Ctrl/Shift+click) and choose "Move marked to..." to move them to a category.',
+      'Hovering a row shows a small picture of the part with its name and size.',
+      '"Import parts..." loads STL and OBJ (+MTL) files. The scale field and the unit preset (mm, cm, inch, m) convert to mm. Imported parts appear under "Imported", are remembered by the browser, and × removes them.',
+      'Drag parts onto the 3D view (they land under the cursor) or onto the Assembly panel; dragging a marked part drags all marked parts.']],
+    ['Assembly list and files', [
+      'One group per part ("×N"): click the header to select all its instances, the caret collapses it.',
+      'Undo / Redo (Ctrl+Z / Ctrl+Y, 100 steps), Delete (Del), Frame all (F).',
+      '"Export STL" and "Export OBJ + MTL" download the assembly (mm, Z-up); OBJ + MTL are two downloads.',
+      '"Save JSON" stores the assembly with its imported parts and dimensions; "Load JSON" replaces the current assembly (one undo step).']],
+    ['Views', [
+      '"Reset view" (R), "Wireframe" (X), "Grid + axes" (G), "Auto-rotate" (T).',
+      '"Four view" (4): Top, Perspective, Front and Left viewports; the orthographic ones zoom and pan but do not rotate.',
+      '"Full screen" (Alt+Enter) shows only the 3D view; Esc or F11 leave it.']],
+    ['Keyboard shortcuts', ['@keys', 'Change them in Settings > Shortcuts.']],
+    ['About', ['EVE3 Edit: LEGO MINDSTORMS EV3 parts viewer and assembly editor.', '@footer']]
+  ];
+  var HELP_FIXED = [['Step through the part list / Assembly list', 'Arrow Up / Down'], ['Snap vertex: re-pick A; dimension: restart', 'Backspace'],
+    ['Rotate the selection about X / Y / Z', 'Alt / Shift / Ctrl + wheel'], ['Copy while dragging the gizmo', 'Alt + drag'],
+    ['Toggle / range selection', 'Ctrl+click / Shift+click'], ['Box select (Assembly mode)', 'Ctrl + left-drag'], ['Maximize / restore a viewport (Four view)', 'Double-click its label']];
+  var helpPrev = null;
+  function helpEl(tag, text, parent){ var e = document.createElement(tag); if (text) e.textContent = text; if (parent) parent.appendChild(e); return e; }
+  function helpRow(tb, a, k){ var r = helpEl('tr', '', tb); helpEl('td', a, r); helpEl('td', k, r); }
+  function openHelp(){
+    var body = $('helpBody'); body.textContent = '';
+    HELP.forEach(function(sec, i){
+      var d = helpEl('details', '', body), ul = null; d.open = i === 0;
+      helpEl('summary', sec[0], d);
+      sec[1].forEach(function(t){
+        if (t === '@keys') {
+          var tb = helpEl('tbody', '', helpEl('table', '', d)), h = helpEl('tr', '', tb); helpEl('th', 'Action', h); helpEl('th', 'Key', h);
+          EVEIO.KEY_ACTIONS.forEach(function(a){ helpRow(tb, a.label, bindings[a.id].join(' / ') || '(none)'); });
+          HELP_FIXED.forEach(function(f){ helpRow(tb, f[0], f[1]); }); ul = null;
+        } else if (t === '@footer') helpEl('p', document.querySelector('footer').textContent, d);
+        else helpEl('li', t, ul || (ul = helpEl('ul', '', d)));
+      });
+    });
+    helpPrev = document.activeElement; $('helpBack').hidden = false; body.focus(); body.scrollTop = 0;
+  }
+  function closeHelp(){
+    $('helpBack').hidden = true;
+    var p = helpPrev; helpPrev = null;
+    try { (p && p !== document.body && p.isConnected ? p : $('bHelp')).focus(); } catch (e) {}
+  }
+  function helpKey(e){
+    var c = EVEIO.comboFromEvent(e);
+    if (e.key === 'Escape' || (c && EVEIO.matchAction(bindings, c) === 'help')) { e.preventDefault(); closeHelp(); }
+  }
+  $('bHelp').onclick = openHelp;
+  $('helpClose').onclick = closeHelp;
+  $('helpBack').onclick = function(e){ if (e.target === this) closeHelp(); };
+
   function onKey(e){
+    if (e.key === 'F1') e.preventDefault(); // never the browser's help page, whatever state we are in
     if (menuEl) { menuKey(e); return; } // context menu open: only its own keys act
     if (rb) { if (e.key === 'Escape') { e.preventDefault(); rbEnd(false); } return; } // box select in progress: Esc cancels, nothing else acts
     if (!$('setBack').hidden) { settingsKey(e); return; } // dialog open: no viewer shortcuts, whatever has focus
+    if (!$('helpBack').hidden) { helpKey(e); return; }
     var t = e.target && e.target.tagName;
     if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
     var combo = EVEIO.comboFromEvent(e), act = combo && EVEIO.matchAction(bindings, combo);
@@ -2159,7 +2262,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     ['Transform', [{id: 'bMove', asm: 1}, {id: 'bRotG', asm: 1}, {id: 'bSnapR', asm: 1}, {id: 'bSnapT', asm: 1, label: 'Snap (bounding box)'}, {id: 'bSnapF', asm: 1},{id: 'bSnapV', asm: 1}, {id: 'bResetT', asm: 1}]],
     ['Dimensions', [{id: 'bDimL', asm: 1}, {id: 'bDimA', asm: 1}]],
     ['View', [{id: 'bFrameAll', asm: 1}, {id: 'bReset'}, {id: 'bWire'}, {id: 'bGrid'}, {id: 'bFour'}, {id: 'bFull'}, {id: 'bRot'}]],
-    ['File', [{id: 'bExpSTL'}, {id: 'bExpOBJ'}, {id: 'bSaveJSON'}]]
+    ['File', [{id: 'bExpSTL'}, {id: 'bExpOBJ'}, {id: 'bSaveJSON'}]],
+    ['Help', [{id: 'bHelp', label: 'Help', icon: '?'}]]
   ];
   var menuEl = null, menuPrev = null, rcDown = null;
   function closeMenu(){
@@ -2198,7 +2302,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
         d.className = 'cmi'; d.tabIndex = -1; d.setAttribute('role', pr !== null ? 'menuitemcheckbox' : 'menuitem');
         if (pr !== null) d.setAttribute('aria-checked', pr);
         if (off) d.setAttribute('aria-disabled', 'true');
-        c.className = 'cmc'; c.textContent = pr === 'true' ? '✓' : '';
+        c.className = 'cmc'; c.textContent = pr === 'true' ? '✓' : it.icon || '';
         l.className = 'cml'; l.textContent = it.label || b.textContent;
         s.className = 'cmk'; s.textContent = key;
         d.appendChild(c); d.appendChild(l); d.appendChild(s);
@@ -2220,7 +2324,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
   window.addEventListener('pointerdown', function(e){ rcDown = {x: e.clientX, y: e.clientY}; }, true);
   document.addEventListener('contextmenu', function(e){
-    if (!$('setBack').hidden) return;
+    if (!$('setBack').hidden || !$('helpBack').hidden) return;
     var t = e.target, only = null, it;
     if (!(t instanceof Element)) return;
     if (vpAt(t)) { // 3D view: only a right click (no drag) opens the menu; the native menu is suppressed either way
