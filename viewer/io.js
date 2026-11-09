@@ -544,8 +544,10 @@
     { id: 'gizmoMove', label: 'Move gizmo', keys: ['W'] },
     { id: 'gizmoRotate', label: 'Rotate gizmo', keys: ['E'] },
     { id: 'snapVertex', label: 'Snap vertex', keys: ['S'] },
+    { id: 'resetTransform', label: 'Reset transform', keys: [] },
     { id: 'snap15', label: 'Snap 15°', keys: ['A'] },
     { id: 'snap1mm', label: 'Snap', keys: ['Z'] }, // id kept from the old "Snap 1 mm" so saved bindings still apply: now the bounding-box snap
+    { id: 'smartSnap', label: 'Smart snap', keys: ['D'] },
     { id: 'deleteSel', label: 'Delete', keys: ['Delete'] },
     { id: 'undo', label: 'Undo', keys: ['Ctrl+Z'] },
     { id: 'redo', label: 'Redo', keys: ['Ctrl+Y', 'Ctrl+Shift+Z'] },
@@ -553,6 +555,7 @@
     { id: 'toggleMode', label: 'Switch Preview / Assembly', keys: ['Q'] },
     { id: 'fourView', label: 'Toggle four view', keys: ['4'] },
     { id: 'fullscreen', label: 'Toggle full screen', keys: ['Alt+Enter'] },
+    { id: 'toggleMax', label: 'Maximize / restore view', keys: ['Space'] },
     { id: 'frameAll', label: 'Frame all', keys: ['F'] },
     { id: 'resetView', label: 'Reset view', keys: ['R'] },
     { id: 'wireframe', label: 'Toggle wireframe', keys: ['X'] },

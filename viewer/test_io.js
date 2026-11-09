@@ -840,6 +840,15 @@ test('keys: merge(overrides(merge(x))) is stable', function () {
   assert.strictEqual(act(a, 'f', { ctrlKey: true, altKey: true }), 'frameAll');
 });
 
+test('keys: Space maps to toggleMax (maximize / restore view)', function () {
+  var d = IO.defaultBindings();
+  assert.deepStrictEqual(d.toggleMax, ['Space']);
+  assert.strictEqual(act(d, ' '), 'toggleMax');
+  assert.strictEqual(act(d, ' ', { shiftKey: true }), null, 'Shift+Space is not bound');
+  assert.deepStrictEqual(IO.mergeBindings({ toggleMax: ['Space'] }).toggleMax, ['Space'], 'saved Space survives normalizing');
+  assert.strictEqual(IO.findConflict(d, 'frameAll', 'Space'), 'toggleMax');
+});
+
 test('keys: Q switches mode, 4 toggles four view, Alt+Enter toggles full screen (free defaults, conflicts handled)', function () {
   var d = IO.defaultBindings();
   assert.deepStrictEqual([d.toggleMode, d.fourView, d.fullscreen], [['Q'], ['4'], ['Alt+Enter']]);

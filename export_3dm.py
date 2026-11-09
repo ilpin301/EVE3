@@ -11,7 +11,7 @@ SRC = "LDraw Parts Library (CC BY 4.0), LEGO MINDSTORMS Team / Philippe Hurbain;
 
 txt = (ROOT / "viewer" / "models.js").read_text(encoding="utf-8")
 # keys are unquoted JS; quote them (same approach as build_models_ldraw.selfcheck), then plain json
-parts = json.loads(re.sub(r'([{,])(id|name|category|dims_mm|approx|meshes|color|v|f):', r'\1"\2":', txt[len("window.PARTS="):].rstrip().rstrip(";")))
+parts = json.loads(re.sub(r'([{,])(id|name|category|dims_mm|approx|meshes|features|color|v|f):', r'\1"\2":', txt[len("window.PARTS="):].rstrip().rstrip(";")))
 
 def rgb(c): return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16), 255
 

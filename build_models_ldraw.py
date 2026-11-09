@@ -4,6 +4,7 @@ Reads from ./ldraw_cache by default; if absent, reads --src (default below) and 
 Writes models/<id>.stl|obj|mtl and viewer/models.js, then self-checks (non-zero exit on failure).
 stdlib only. LDraw: 1 LDU = 0.4 mm, Y down; converted to Z-up mm via (x,y,z)->(x, z, -y)*0.4 (proper rotation)."""
 import math, os, re, shutil, sys, json, struct
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -128,6 +129,28 @@ class Lib:
                 det = (nm[0] * (nm[4] * nm[8] - nm[5] * nm[7]) - nm[1] * (nm[3] * nm[8] - nm[5] * nm[6]) + nm[2] * (nm[3] * nm[7] - nm[4] * nm[6]))
                 self.flatten(sub, col, nm + t, out, inv ^ invn ^ (det < 0) ^ (self._det(M) < 0), depth + 1)
 
+    def features(self, name, M, out, in_bush=False, depth=0):
+        """Append (basename, M) for every snap-feature primitive (FEAT) below `name`; does not descend into them,
+        except bush* (shaft) which holds the bush's cross hole. Same matrix chain as flatten."""
+        rel = self.find(name)
+        if rel is None or depth > 40: return
+        for op in self.parse(rel):
+            if op[0] != "s": continue
+            nm, b = self.xf_rot(M, op[2][3:12]) + self.xf(M, op[2][0:3]), basename(op[3])
+            hit = FEAT.match(b) and not (in_bush and b.startswith("bush"))
+            if hit: out.append((b, nm))
+            if not hit or b.startswith("bush"): self.features(op[3], nm, out, in_bush or b.startswith("bush"), depth + 1)
+
+    def verts(self, name, M, depth=0):
+        """Face vertices of a primitive under M (LDU); npeghol* sub-files are face patches reaching towards the
+        neighbouring hole (origin 10 LDU off-axis), so they are left out of the hole's own geometry."""
+        rel, out = self.find(name), []
+        if rel is None or depth > 40: return out
+        for op in self.parse(rel):
+            if op[0] == "p": out += [self.xf(M, p) for p in op[2]]
+            elif not basename(op[3]).startswith("npeghol"): out += self.verts(op[3], self.xf_rot(M, op[2][3:12]) + self.xf(M, op[2][0:3]), depth + 1)
+        return out
+
     @staticmethod
     def _det(M):
         return M[0] * (M[4] * M[8] - M[5] * M[7]) - M[1] * (M[3] * M[8] - M[5] * M[6]) + M[2] * (M[3] * M[7] - M[4] * M[6])
@@ -142,15 +165,76 @@ class Lib:
 
 IDENT = (1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
 
-def build_ldraw(lib, files):
-    """files [(name,colour)] -> {rgb: [tri,...]} in Z-up mm."""
-    raw = []
-    for name, col in files: lib.flatten(name, col, IDENT, raw)
+# ---------------------------------------------------------------- snap features (hole / shaft axes)
+# npeghol* (patches between holes), connectring/connectslit* (long-pin middle decoration), fric (inside confric*) are
+# not features; edge-only primitives (axlehol2/3/9, axl2hol2/9, axl5hol9) have no faces and are dropped.
+FEAT = re.compile(r"(peghole|beamhole|connhole|axl\w*|bush\w*|confric\w*|connect\d\w*)\.dat$")
+basename = lambda s: s.replace("\\", "/").lower().rsplit("/", 1)[-1]
+dot = lambda a, b: a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+sub = lambda a, b: (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+axpy = lambda s, a, b: (s * a[0] + b[0], s * a[1] + b[1], s * a[2] + b[2])  # s*a + b
+unit = lambda a: axpy(1 / math.sqrt(dot(a, a)), a, (0, 0, 0))
+crossn = lambda a, b: math.sqrt(dot(a, a) * dot(b, b) - dot(a, b) ** 2)  # |a x b|
+
+def classify(b, mode):
+    if b.startswith(("bush", "confric", "connect")): return "shaft", "round"
+    if b.startswith("axl"): return ("shaft" if mode == "axle" else "hole"), "cross"  # axle parts use axlehol8 as shaft body
+    return "hole", "round"  # peghole, beamhole, connhole
+
+def build_ldraw(lib, files, mode=None):
+    """files [(name,colour)] -> ({rgb: [tri,...]} in Z-up mm, feature point triples (o, o+d, o+u) in the same frame,
+    feature meta [(k, p, name, r_mm, [t0, t1]_mm)], primitive log [(name, 'k/p' or 'edge-only, dropped')])."""
+    raw, prims = [], []
+    for name, col in files: lib.flatten(name, col, IDENT, raw); lib.features(name, IDENT, prims)
+    cv = lambda p: (p[0] * SCALE, p[2] * SCALE, -p[1] * SCALE)  # (x,y,z)->(x,z,-y), det +1
     groups = {}
     for rgb, (a, b, c) in raw:
-        cv = lambda p: (p[0] * SCALE, p[2] * SCALE, -p[1] * SCALE)  # (x,y,z)->(x,z,-y), det +1
         groups.setdefault(rgb, []).append((cv(a), cv(b), cv(c)))
-    return groups
+    ftris, fmeta, plog = [], [], []
+    for b, M in prims:
+        V = lib.verts(b, M)
+        if not V: plog.append((b, "edge-only, dropped")); continue
+        ax = 2 if b.startswith("bush") else 1  # bush primitives are modelled along their local Z, all others along Y
+        o, d = M[9:12], unit((M[ax], M[3 + ax], M[6 + ax]))
+        u = unit(axpy(-dot((M[0], M[3], M[6]), d), d, (M[0], M[3], M[6])))
+        t = [dot(sub(v, o), d) for v in V]
+        r = max(math.sqrt(max(0.0, dot(sub(v, o), sub(v, o)) - s * s)) for v, s in zip(V, t))
+        k, p = classify(b, mode)
+        ftris.append((cv(o), cv(axpy(1, d, o)), cv(axpy(1, u, o))))
+        fmeta.append((k, p, b, r * SCALE, [min(t) * SCALE, max(t) * SCALE]))
+        plog.append((b, f"{k}/{p}"))
+    return groups, ftris, fmeta, plog
+
+def merge_features(ftris, fmeta):
+    """Final-frame triples + meta -> list of feature dicts. Coaxial holes (gap <= 7 mm, e.g. peghole ends on both faces)
+    and contiguous cross shafts (axle body + ends) merge into one segment; round shafts (pin halves) stay separate."""
+    segs = []
+    for (a, b, c), (k, p, n, r, l) in zip(ftris, fmeta):
+        d = unit(sub(b, a)); u = sub(c, a)
+        segs.append(dict(k=k, p=p, o=a, d=d, u=unit(axpy(-dot(u, d), d, u)), r=r, l=l, n=n, w=1))
+    def merge(s, t):
+        if (s["k"], s["p"]) != (t["k"], t["p"]) or (s["k"], s["p"]) == ("shaft", "round") or abs(s["r"] - t["r"]) > 1.0: return False
+        if crossn(s["d"], t["d"]) > 1e-3: return False
+        w = sub(t["o"], s["o"]); a = dot(w, s["d"]); perp = axpy(-a, s["d"], w)
+        if dot(perp, perp) > 0.3 ** 2: return False  # gear_z16's 4 axlehol6 teeth sit 0.11 mm off-centre
+        sg = 1 if dot(s["d"], t["d"]) > 0 else -1
+        lo, hi = sorted((a + sg * t["l"][0], a + sg * t["l"][1]))
+        if max(lo - s["l"][1], s["l"][0] - hi) > (7.0 if s["k"] == "hole" else 0.1): return False  # face-to-face peghole pair: 6.4 mm
+        s["l"] = [min(s["l"][0], lo), max(s["l"][1], hi)]; s["r"] = max(s["r"], t["r"])
+        s["o"] = axpy(t["w"] / (s["w"] + t["w"]), perp, s["o"]); s["w"] += t["w"]  # o -> centroid of member axes
+        return True
+    i = 0
+    while i < len(segs):
+        j = next((j for j in range(i + 1, len(segs)) if merge(segs[i], segs[j])), None)
+        if j is None: i += 1
+        else: del segs[j]; i = 0
+    rnd = lambda x: round(x, 3) + 0.0  # + 0.0 turns -0.0 into 0.0
+    out = []
+    for s in segs:
+        f = {"k": s["k"], "p": s["p"], "o": [rnd(x) for x in s["o"]], "d": [rnd(x) for x in s["d"]], "u": [rnd(x) for x in s["u"]],
+             "r": rnd(s["r"]), "l": [rnd(x) for x in s["l"]], "n": s["n"]}
+        if f not in out: out.append(f)
+    return out
 
 # ---------------------------------------------------------------- orientation / welding
 def bbox(groups):
@@ -164,19 +248,21 @@ def permute(groups, order):
     f = lambda p: (p[order[0]], p[order[1]], s * p[order[2]])
     return {c: [tuple(f(p) for p in t) for t in m] for c, m in groups.items()}
 
-def orient(groups, mode):
+def orient(groups, mode, feats=()):
+    """Orient + centre the mesh; `feats` (point triples) get exactly the same ops. bbox comes from the mesh only."""
     lo, hi = bbox(groups)
     ext = [hi[i] - lo[i] for i in range(3)]
     if mode in ("beam", "axle"):
         order = sorted(range(3), key=lambda i: -ext[i])
-        groups = permute(groups, order)
+        groups, feats = permute(groups, order), permute({0: feats}, order)[0]
     elif mode == "axis":  # rotation axis = the axis whose extent differs from the (equal) pair of diameters -> Z
         k = min(range(3), key=lambda a: abs(ext[(a + 1) % 3] - ext[(a + 2) % 3]))
-        groups = permute(groups, [(k + 1) % 3, (k + 2) % 3, k])
+        groups, feats = permute(groups, [(k + 1) % 3, (k + 2) % 3, k]), permute({0: feats}, [(k + 1) % 3, (k + 2) % 3, k])[0]
     elif mode == "elec":
-        if ext[1] > ext[0]: groups = {c: old.R(m, "z", 90) for c, m in groups.items()}
+        if ext[1] > ext[0]: groups, feats = {c: old.R(m, "z", 90) for c, m in groups.items()}, old.R(feats, "z", 90)
     lo, hi = bbox(groups)
-    return {c: old.T(m, -(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]) for c, m in groups.items()}
+    dx, dy, dz = -(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]
+    return {c: old.T(m, dx, dy, dz) for c, m in groups.items()}, old.T(feats, dx, dy, dz)
 
 def weld(tris):
     idx, V, F = {}, [], []
@@ -218,10 +304,13 @@ def main(src):
         fell_back = mode is None
         if fell_back:
             groups = old.finalize(old.BUILD[pid]())
-            lname = "(parametric)"
+            lname, feats, plog = "(parametric)", [], []
         else:
-            groups = orient(build_ldraw(lib, files), mode)
+            groups, ftris, fmeta, plog = build_ldraw(lib, files, mode)
+            groups, ftris = orient(groups, mode, ftris)
+            feats = merge_features(ftris, fmeta)
             lname = "+".join(f[0][:-4] for f in files)
+        for (n, kp), cnt in sorted(Counter(plog).items()): print(f"  feature-prim {pid:18}{n:14}{kp:20} x{cnt}")
         out, flipped, odd = {}, [], []
         for c, tris in groups.items():
             if old.vol(tris) < 0: tris = [(a, c_, b) for a, b, c_ in tris]; flipped.append(c)
@@ -233,8 +322,9 @@ def main(src):
         lo = [min(p[i] for t in alltris for p in t) for i in range(3)]; hi = [max(p[i] for t in alltris for p in t) for i in range(3)]
         dims = [round(hi[i] - lo[i], 2) for i in range(3)]
         meshes = ['{color:"%s",v:[%s],f:[%s]}' % (c, ",".join(old.fmt(x) for p in V for x in p), ",".join(str(i) for t in F for i in t)) for c, (V, F) in out.items()]
-        entries.append('{id:%s,name:%s,category:%s,dims_mm:[%s],approx:%s,meshes:[%s]}' % (
-            json.dumps(pid), json.dumps(name), json.dumps(cat), ",".join(old.fmt(d) for d in dims), "true" if fell_back else "false", ",".join(meshes)))
+        entries.append('{id:%s,name:%s,category:%s,dims_mm:[%s],approx:%s,meshes:[%s],features:%s}' % (
+            json.dumps(pid), json.dumps(name), json.dumps(cat), ",".join(old.fmt(d) for d in dims), "true" if fell_back else "false", ",".join(meshes),
+            json.dumps(feats, separators=(",", ":"))))
         info[pid] = dict(ldraw=lname, tris=len(alltris), dims=dims, flipped=flipped, odd=odd, fallback=fell_back, groups=len(out))
     (VIEW / "models.js").write_text("window.PARTS=[\n" + ",\n".join(entries) + "\n];\n", encoding="utf-8")
     if lib.missing: print("missing sub-files (skipped):", sorted(lib.missing)[:40], len(lib.missing))
@@ -245,10 +335,14 @@ def main(src):
         print(f"ldraw_cache filled with {len(lib.used)} .dat files")
     return info
 
+# beam holes run along final Y: a beam is 8 mm deep (hole axis) but only 7.2 mm high, so orient() puts the hole axis on Y
+FEAT_EXPECT = {"beam_3m": (3, "hole", "round", 1), "peg_friction_2m": (2, "shaft", "round", 0), "axle_3m": (1, "shaft", "cross", 0),
+               "gear_z8": (1, "hole", "cross", 2)}
+
 def selfcheck(info):
     fails = []
     txt = (VIEW / "models.js").read_text(encoding="utf-8")
-    parts = json.loads(re.sub(r'([{,])(id|name|category|dims_mm|approx|meshes|color|v|f):', r'\1"\2":', txt[len("window.PARTS="):].rstrip().rstrip(";")))
+    parts = json.loads(re.sub(r'([{,])(id|name|category|dims_mm|approx|meshes|features|color|v|f):', r'\1"\2":', txt[len("window.PARTS="):].rstrip().rstrip(";")))
     ids = [m[0] for m in old.MANIFEST]
     if [p["id"] for p in parts] != ids: fails.append("models.js ids != manifest")
     print(f"{'id':18}{'ldraw':16}{'tris':>8} {'groups':>6}  {'bbox X x Y x Z (mm)':28}{'size MB':>8}")
@@ -270,8 +364,21 @@ def selfcheck(info):
         if (OUT / f"{pid}.obj").read_text().count("usemtl") != len(p["meshes"]): fails.append(f"{pid}: obj usemtl count")
         if p["approx"] != i["fallback"]: fails.append(f"{pid}: approx flag")
         if i["odd"]: fails.append(f"{pid}: groups with volume <= 0 after flip: {i['odd']}")
+        F = p["features"]; nh = sum(f["k"] == "hole" for f in F)
+        lo3, hi3 = [min(q[a] for q in pts) for a in range(3)], [max(q[a] for q in pts) for a in range(3)]
+        for f in F:
+            if f["k"] not in ("hole", "shaft") or f["p"] not in ("round", "cross") or f["l"][0] > f["l"][1] or f["r"] <= 0: fails.append(f"{pid}: bad feature {f}")
+            if any(not lo3[a] - 1 <= f["o"][a] <= hi3[a] + 1 for a in range(3)): fails.append(f"{pid}: feature origin outside bbox {f}")
+            if abs(dot(f["d"], f["d"]) - 1) > 0.004 or abs(dot(f["u"], f["u"]) - 1) > 0.004 or abs(dot(f["d"], f["u"])) > 0.004: fails.append(f"{pid}: d/u not unit+perpendicular {f}")
+        if pid in FEAT_EXPECT:  # (count, k, p, final axis index of d)
+            n, k, pr, ax = FEAT_EXPECT[pid]
+            if len(F) != n or any((f["k"], f["p"]) != (k, pr) or abs(f["d"][ax]) < 0.999 for f in F): fails.append(f"{pid}: features {[(f['k'], f['p'], f['d']) for f in F]}")
+        if pid == "beam_3m":  # one row of holes, 8 mm pitch along X
+            xs = sorted(f["o"][0] for f in F)
+            if any(abs(b - a - 8) > 0.01 for a, b in zip(xs, xs[1:])) or any(abs(f["o"][a] - F[0]["o"][a]) > 0.05 for f in F for a in (1, 2)): fails.append(f"{pid}: hole row {[f['o'] for f in F]}")
+        if pid == "axle_3m" and F and abs(F[0]["l"][1] - F[0]["l"][0] - bb[0]) > 0.5: fails.append(f"{pid}: shaft length {F[0]['l']} vs {bb[0]:.2f}")
         sz = sum(len(json.dumps(m)) for m in p["meshes"]) / 1e6
-        print(f"{pid:18}{i['ldraw']:16}{ntri:>8} {i['groups']:>6}  {bb[0]:7.2f} x {bb[1]:6.2f} x {bb[2]:6.2f}  {sz:8.2f}" + (f"  flipped {len(i['flipped'])}" if i["flipped"] else ""))
+        print(f"{pid:18}{i['ldraw']:16}{ntri:>8} {i['groups']:>6}  {bb[0]:7.2f} x {bb[1]:6.2f} x {bb[2]:6.2f}  {sz:8.2f}  holes {nh:2} shafts {len(F) - nh:2}" + (f"  flipped {len(i['flipped'])}" if i["flipped"] else ""))
     size = (VIEW / "models.js").stat().st_size / 1e6
     print(f"parts: {len(parts)}   total triangles: {sum(i['tris'] for i in info.values())}   models.js size: {size:.2f} MB")
     if size > 30: fails.append("models.js > 30 MB")

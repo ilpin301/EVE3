@@ -139,7 +139,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     </div>
     <button id="bSnapR" aria-pressed="false">Snap 15°</button>
     <button id="bSnapT" aria-pressed="false">Snap</button>
+    <button id="bSnapF" aria-pressed="false">Smart snap</button>
     <button id="bSnapV" aria-pressed="false" title="Snap vertex A onto vertex B (S)">Snap vertex</button>
+    <button id="bResetT" title="Reset transform: rotation back to the part's default orientation">Reset transform</button>
     <button id="bDimL" aria-pressed="false" title="Dimension line: click 2 vertices (distance in mm)">Dim line</button>
     <button id="bDimA" aria-pressed="false" title="Dimension angle between two lines: click 2 points of line 1, 2 points of line 2, then click to place">Dim angle</button>
   </div>
@@ -203,6 +205,8 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     </div>
     <div id="panSet" role="tabpanel" aria-labelledby="tabSet" hidden>
       <div class="krow"><label class="kl" for="rotStep">Step of rotate snapping (&deg;)</label><input type="number" id="rotStep" min="0.1" max="180" step="any"></div>
+      <div class="krow"><label class="kl" for="smartDist">Smart snap distance (mm)</label><input type="number" id="smartDist" min="0.1" max="50" step="any"></div>
+      <div class="krow"><label class="kl" for="smartAng">Smart snap angle (&deg;)</label><input type="number" id="smartAng" min="0.5" max="45" step="any"></div>
       <div class="krow"><label class="kl" for="autoFocus">Autofocus to selected</label><input type="checkbox" id="autoFocus"></div>
     </div>
     <div id="setMsg" class="muted" aria-live="polite"></div>
@@ -216,6 +220,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 <script src="TransformControls.js"></script>
 <script src="models.js"></script>
 <script src="io.js"></script>
+<script src="snap.js"></script>
 <script>
 (function(){
   var $ = function(id){ return document.getElementById(id); };
@@ -223,7 +228,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   var view = $('view'), msg = $('msg');
   function fail(t){ msg.textContent = t; msg.style.display = 'flex'; }
 
-  if (typeof THREE === 'undefined' || !THREE.OrbitControls || !THREE.TransformControls || !window.EVEIO) { fail('three.min.js / OrbitControls.js / TransformControls.js / io.js failed to load.'); return; }
+  if (typeof THREE === 'undefined' || !THREE.OrbitControls || !THREE.TransformControls || !window.EVEIO || !window.EVESNAP) { fail('three.min.js / OrbitControls.js / TransformControls.js / io.js / snap.js failed to load.'); return; }
   var PARTS = window.PARTS;
   if (!Array.isArray(PARTS) || !PARTS.length) { fail('models.js is missing or empty (window.PARTS not defined).'); return; }
 
@@ -279,6 +284,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   function applyMax(){
     V4.forEach(function(v){ v.el.classList.toggle('max', v.name === maxVp); });
     $('vps').classList.toggle('hasmax', !!maxVp);
+  }
+  // Space: restore if one is maximized, else maximize the viewport under the pointer (hoverVp), else the last active one
+  var hoverVp = null;
+  function toggleMax(){
+    var n = maxVp || (hoverVp && V4.indexOf(hoverVp) >= 0 ? hoverVp.name : V4.indexOf(act) >= 0 ? act.name : null);
+    if (!n) return;
+    maxVp = maxVp === n ? null : n; applyMax();
   }
   // the viewport under an event target (null = not a 3D surface: buttons, labels, panels)
   function vpAt(t){
@@ -469,7 +481,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     g.traverse(function(o){ if (o.isMesh) { o.material.transparent = true; o.material.opacity = 0.3; o.material.depthWrite = false; } });
     ghostGroup.add(g);
   }
-  function beforeRebuild(){ clearGhosts(); allTC.forEach(function(t){ t.detach(); }); } // never point at a group about to be disposed
+  function beforeRebuild(){ clearGhosts(); clearSmartHi(); allTC.forEach(function(t){ t.detach(); }); } // never point at a group about to be disposed
   function afterRebuild(){}  // gizmo re-attaches by selUid in setSelection(), called at the end of rebuildInstances()
 
   // gizmo commit: one undo step per drag that actually changed the transform
@@ -547,9 +559,53 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       var h = new THREE.Box3Helper(b, 0xff8800); h.material.depthTest = false; h.renderOrder = 998; bbHi.add(h);
     });
   }
+  // "Smart snap" (smartSnap, snap.js): hole/shaft axis snap. While dragging, the best pairing of the moving set's features with any other instance's
+  // (within SMART_DIST mm / SMART_ANG deg) is previewed: both axes as lines + translucent ghosts at the snapped pose; on release the set moves there,
+  // inside the same undo step. smartHi is not in `built` (never picked/exported/framed). Parts without `features` (imported) never snap.
+  var smartSnap = false, smartHi = new THREE.Group(), smartMoved = false; // smartMoved: objectChange ran in this drag (a bare click never snaps)
+  scene.add(smartHi);
+  function clearSmartHi(){
+    while (smartHi.children.length) {
+      var h = smartHi.children[0]; smartHi.remove(h);
+      h.traverse(function(o){ if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); // Lines too (disposeObj frees meshes only)
+    }
+  }
+  function smartFind(set){
+    var near = EVESNAP.DEFAULTS.near, ids = set.map(function(i){ return i.uid; }), mb = new THREE.Box3();
+    function rec(i){ var p = lookupPart(i.partId); return {id: i.uid, features: EVESNAP.worldFeatures(p && p.features || [], i.matrix.elements)}; }
+    var moving = set.map(rec);
+    if (!moving.some(function(m){ return m.features.length; })) return null;
+    set.forEach(function(i){ mb.union(instBox(i)); });
+    mb.expandByScalar(near);
+    var statics = instances.filter(function(i){ return ids.indexOf(i.uid) < 0 && mb.intersectsBox(instBox(i)); }).map(rec);
+    return EVESNAP.findBest(moving, statics, {dist: SMART_DIST, angle: SMART_ANG, near: near});
+  }
+  var SMART_EXT = 3; // mm the preview axis lines reach past the feature segments
+  function smartPreview(set){
+    clearSmartHi();
+    var c = smartFind(set);
+    if (!c) return;
+    [c.info.mf, c.info.sf].forEach(function(f){ // the moving axis at its current pose: at the snapped pose it would hide under the static one
+      var o = new THREE.Vector3().fromArray(f.o), d = new THREE.Vector3().fromArray(f.d), a = Math.min(f.l[0], f.l[1]) - SMART_EXT, b = Math.max(f.l[0], f.l[1]) + SMART_EXT;
+      var ln = new THREE.Line(new THREE.BufferGeometry().setFromPoints([o.clone().addScaledVector(d, a), o.clone().addScaledVector(d, b)]),
+        new THREE.LineBasicMaterial({color: 0x00e5ff, depthTest: false}));
+      ln.renderOrder = 999; smartHi.add(ln);
+    });
+    set.forEach(function(i){ // same translucent ghost as addGhost, own group (clearGhosts belongs to Alt-drag)
+      var p = lookupPart(i.partId); if (!p) return;
+      var g = makePartGroup(p, wire);
+      new THREE.Matrix4().fromArray(EVESNAP.applyToMatrix(c.M, i.matrix.elements)).decompose(g.position, g.quaternion, tmpScale);
+      g.traverse(function(o){ if (o.isMesh) { o.material.transparent = true; o.material.opacity = 0.3; o.material.depthWrite = false; } });
+      smartHi.add(g);
+    });
+  }
+  function smartApply(set){
+    var c = smartFind(set);
+    if (c) set.forEach(function(i){ i.matrix.fromArray(EVESNAP.applyToMatrix(c.M, i.matrix.elements)); applyMatrix(i); });
+  }
   function onTC(type, fn){ allTC.forEach(function(t){ t.addEventListener(type, fn); }); }
   onTC('mouseDown', function(e){
-    dragCopy = altDrag; altDrag = false;
+    dragCopy = altDrag; altDrag = false; smartMoved = false;
     clearGhosts();
     if (e.target.object === pivot) {
       grp = {p0: pivot.position.clone(), recs: marks.map(function(u){ var i = instances[findInst(u)]; return {i: i, m: i.matrix.elements.slice()}; })};
@@ -566,12 +622,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (grp) groupApply(); else syncMatrixFromObj(selInst());
     if (bbSnap && !rot) bbSnapMove(snapMoved(), true);
     rebuildDims(); // dimensions follow the part live
+    smartMoved = true;
+    if (smartSnap) smartPreview(snapMoved());
   });
   onTC('mouseUp', function(e){
-    clearBbHi(); clearGhosts();
-    var rot = e.target.mode === 'rotate', cp = dragCopy; dragCopy = false;
+    clearBbHi(); clearGhosts(); clearSmartHi();
+    var rot = e.target.mode === 'rotate', cp = dragCopy, sm = smartSnap && smartMoved; dragCopy = false; smartMoved = false;
     if (grp) { // ONE undo step for the whole group drag (matrices are already current: objectChange ran on the last move)
       if (bbSnap && rot) bbSnapMove(snapMoved(), false);
+      if (sm) smartApply(snapMoved()); // before the commit / dropCopies: the snap is part of this undo step and the copies land snapped
       var g = grp; grp = null;
       var changed = g.recs.some(function(r){ for (var j = 0; j < 16; j++) if (Math.abs(r.i.matrix.elements[j] - r.m[j]) > 1e-9) return true; return false; });
       if (changed && cp) { dropCopies(g.recs); if (marks.length > 1) placePivot(); return; } // TransformControls may still report dragging here
@@ -583,10 +642,52 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     if (!i || !s) return;
     syncMatrixFromObj(i);
     if (bbSnap && rot) bbSnapMove([i], false);
+    if (sm) smartApply([i]);
     // tolerance: decompose/compose round trip after undo can differ by an ulp
     for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { if (cp) dropCopies([{i: i, m: s}]); else commit(); return; }
   });
   onTC('mouseUp', function(){ rebuildDims(); }); // after the handler above: its end-of-drag snap (rotate) may have moved parts once more
+  // Alt/Shift/Ctrl + wheel: rotate the marked parts about a world axis (Alt = X, Shift = Y, Ctrl = Z) through the centre of their bounding boxes, ROT_STEP degrees per notch.
+  // A burst of notches is ONE undo step: committed 400 ms after the last notch, or at once before undo/redo.
+  var wheelRotTimer = null;
+  function flushWheelRot(){ if (wheelRotTimer === null) return; clearTimeout(wheelRotTimer); wheelRotTimer = null; commit(); }
+  window.addEventListener('wheel', function(e){
+    var ax = e.altKey ? 0 : e.shiftKey ? 1 : (e.ctrlKey || e.metaKey) ? 2 : -1;
+    if (ax < 0 || mode !== 'assembly' || snapSt !== 'off' || !marks.length || !vpAt(e.target)) return; // otherwise the wheel zooms as usual
+    e.preventDefault(); e.stopPropagation(); // also stops the browser page zoom (Ctrl+wheel) and the OrbitControls zoom
+    var d = e.deltaY || e.deltaX; // Shift+wheel arrives as deltaX in some browsers
+    if (!d || tcBusy()) return;
+    var c = new THREE.Vector3(), b = new THREE.Vector3(), insts = marks.map(function(u){ return instances[findInst(u)]; });
+    insts.forEach(function(i){ c.add(instBox(i).getCenter(b)); });
+    c.divideScalar(insts.length);
+    var axis = new THREE.Vector3(); axis.setComponent(ax, 1);
+    var M = new THREE.Matrix4().makeTranslation(c.x, c.y, c.z)
+      .multiply(new THREE.Matrix4().makeRotationAxis(axis, THREE.MathUtils.degToRad(ROT_STEP) * (d < 0 ? 1 : -1)))
+      .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+    insts.forEach(function(i){ i.matrix.premultiply(M); applyMatrix(i); });
+    if (marks.length > 1) placePivot();
+    rebuildDims();
+    clearTimeout(wheelRotTimer); wheelRotTimer = setTimeout(function(){ wheelRotTimer = null; commit(); }, 400);
+  }, {capture: true, passive: false});
+  // Reset transform: rotation (and scale) of the marked parts back to identity, bounding-box centre of each part stays put. One undo step; no commit if nothing changed.
+  function resetTransform(){
+    if (mode !== 'assembly' || !marks.length || tcBusy() || snapSt !== 'off') return;
+    flushWheelRot();
+    var changed = false, n = 0;
+    marks.forEach(function(u){
+      var i = instances[findInst(u)]; if (!i) return;
+      var c = instBox(i).getCenter(new THREE.Vector3()), p = new THREE.Vector3().setFromMatrixPosition(i.matrix), old = i.matrix.elements.slice();
+      i.matrix.makeTranslation(p.x, p.y, p.z);
+      var d = c.sub(instBox(i).getCenter(new THREE.Vector3()));
+      i.matrix.premultiply(new THREE.Matrix4().makeTranslation(d.x, d.y, d.z));
+      applyMatrix(i); n++;
+      for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - old[j]) > 1e-9) changed = true;
+    });
+    if (marks.length > 1) placePivot();
+    rebuildDims();
+    if (changed) commit();
+    setStatus('Reset transform: ' + n + ' part(s)');
+  }
   function setGizmoMode(m){
     allTC.forEach(function(t){ t.setMode(m); });
     $('bMove').setAttribute('aria-pressed', m === 'translate');
@@ -765,14 +866,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       rebuildInstances(); // clears selUid if gone, refreshes the list; no groups in Preview mode
     } finally { restoring = false; }
   }
-  function undo(){ snapExit(); if (undoIdx <= 0) return; undoIdx--; restore(undoStack[undoIdx]); updateUndoButtons(); }
-  function redo(){ snapExit(); if (undoIdx >= undoStack.length - 1) return; undoIdx++; restore(undoStack[undoIdx]); updateUndoButtons(); }
+  function undo(){ flushWheelRot(); snapExit(); if (undoIdx <= 0) return; undoIdx--; restore(undoStack[undoIdx]); updateUndoButtons(); }
+  function redo(){ flushWheelRot(); snapExit(); if (undoIdx >= undoStack.length - 1) return; undoIdx++; restore(undoStack[undoIdx]); updateUndoButtons(); }
 
   // the ONE selection setter: list, 3D click, keys, undo/redo, add. uids that do not exist are dropped; key (if given) becomes the Shift-range anchor
   function setMarks(uids, key){
     marks = uids.filter(function(u, k){ return findInst(u) >= 0 && uids.indexOf(u) === k; });
     if (key !== undefined) anchorKey = key;
     selUid = marks.length === 1 ? marks[0] : null;
+    clearSmartHi(); // the smart-snap preview belongs to the previous selection's drag
     if (marks.length && selDims.length && !keepDimSel) { selDims = []; renderDimList(); rebuildDims(); } // a part selection replaces the dimension selection
     renderAsmList();
     instances.forEach(function(i){
@@ -835,7 +937,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     else if (uid !== null) setMarksKeep(marks.indexOf(uid) >= 0 ? marks.filter(function(u){ return u !== uid; }) : marks.concat(uid), 'i:' + uid);
     return selUid;
   }
-  view.addEventListener('pointerdown', function(e){ var v = vpAt(e.target); if (!v) return; act = v; down = {x: e.clientX, y: e.clientY, b: e.button}; });
+  view.addEventListener('pointermove', function(e){ var v = vpAt(e.target); if (v) hoverVp = v; });
+  view.addEventListener('pointerleave', function(){ hoverVp = null; });
+  view.addEventListener('pointerdown', function(e){ var v = vpAt(e.target); if (!v) return; act = v; hoverVp = v; down = {x: e.clientX, y: e.clientY, b: e.button}; });
   view.addEventListener('pointerup', function(e){
     var d = down; down = null;
     if (!vpAt(e.target)) return;
@@ -1299,7 +1403,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     $('dimBox').hidden = !dims.length;
     updateDel();
   }
-  function updateDel(){ $('bDel').disabled = !marks.length && !selDims.length; } // Delete works on marked parts and/or selected dimensions
+  function updateDel(){ $('bDel').disabled = !marks.length && !selDims.length; $('bResetT').disabled = mode !== 'assembly' || !marks.length; } // Delete works on marked parts and/or selected dimensions
   function snapClick(x, y){
     if (snapSt === 'dim') { dimClick(x, y); return; }
     if (snapSt === 'pickA') {
@@ -1532,7 +1636,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     var o = null, r = {};
     try { o = JSON.parse(localStorage.getItem(UI_STORE)); } catch (e) {}
     if (!o || typeof o !== 'object') return r;
-    ['wire', 'rot', 'grid', 'four', 'snapR', 'snapT'].forEach(function(k){ if (typeof o[k] === 'boolean') r[k] = o[k]; });
+    ['wire', 'rot', 'grid', 'four', 'snapR', 'snapT', 'snapF'].forEach(function(k){ if (typeof o[k] === 'boolean') r[k] = o[k]; });
     if (o.gizmo === 'translate' || o.gizmo === 'rotate') r.gizmo = o.gizmo;
     ['cats', 'asm'].forEach(function(k){
       if (!o[k] || typeof o[k] !== 'object') return;
@@ -1755,6 +1859,13 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     return 15;
   })();
   $('bSnapR').textContent = 'Snap ' + ROT_STEP + '°';
+  // Smart snap tolerances, same storage rules as ROT_STEP
+  var SMART_DIST_STORE = 'eve3.smartdist', SMART_ANG_STORE = 'eve3.smartang';
+  function storedNum(key, lo, hi, def){
+    try { var v = parseFloat(localStorage.getItem(key)); if (isFinite(v) && v >= lo && v <= hi) return v; } catch (e) {}
+    return def;
+  }
+  var SMART_DIST = storedNum(SMART_DIST_STORE, 0.1, 50, EVESNAP.DEFAULTS.dist), SMART_ANG = storedNum(SMART_ANG_STORE, 0.5, 45, EVESNAP.DEFAULTS.angle);
   var AF_STORE = 'eve3.autofocus';
   AUTOFOCUS = (function(){ // garbage in storage is ignored (default on)
     try { var v = localStorage.getItem(AF_STORE); if (v === '0') return false; } catch (e) {}
@@ -1770,6 +1881,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     gizmoMove: function(){ if (mode === 'assembly') setGizmoMode('translate'); },
     gizmoRotate: function(){ if (mode === 'assembly') setGizmoMode('rotate'); },
     snapVertex: function(){ if (mode === 'assembly') snapStart(); },
+    resetTransform: resetTransform,
     deleteSel: function(){ if (mode === 'assembly' && (marks.length || selDims.length)) deleteSelected(); },
     undo: undo, redo: redo,
     deselect: function(){
@@ -1777,17 +1889,20 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (current) { pmarks = [current.id]; pAnchor = current.id; markSel(); }
     },
     toggleMode: function(){ setMode(mode === 'preview' ? 'assembly' : 'preview'); },
-    fourView: clickBtn('bFour'), fullscreen: clickBtn('bFull'),
-    snap15: clickBtn('bSnapR'), snap1mm: clickBtn('bSnapT'),
+    toggleMax: toggleMax, fourView: clickBtn('bFour'), fullscreen: clickBtn('bFull'),
+    snap15: clickBtn('bSnapR'), snap1mm: clickBtn('bSnapT'), smartSnap: clickBtn('bSnapF'),
     frameAll: clickBtn('bFrameAll'), resetView: clickBtn('bReset'), wireframe: clickBtn('bWire'),
     grid: clickBtn('bGrid'), autoRotate: clickBtn('bRot'), addToAssembly: clickBtn('bAdd')
   };
-  var TITLES = {bPrev: ['toggleMode', 'Preview mode'], bAsm: ['toggleMode', 'Assembly mode'], bFour: ['fourView', 'Four view'], bFull: ['fullscreen', 'Full screen'], bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'],
+  var TITLES = {bPrev: ['toggleMode', 'Preview mode'], bAsm: ['toggleMode', 'Assembly mode'], bFour: ['fourView', 'Four view'], bFull: ['fullscreen', 'Full screen'], bMove: ['gizmoMove', 'Move'], bRotG: ['gizmoRotate', 'Rotate'], bSnapV: ['snapVertex', 'Snap vertex A onto vertex B'], bResetT: ['resetTransform', 'Reset transform'],
     bSnapR: ['snap15', function(){ return 'Snap ' + ROT_STEP + '°'; }], bSnapT: ['snap1mm', 'Snap to nearby bounding boxes'],
+    bSnapF: ['smartSnap', 'Smart snap: align hole and shaft axes on release'],
     bDel: ['deleteSel', 'Delete'], bUndo: ['undo', 'Undo'], bRedo: ['redo', 'Redo'], bFrameAll: ['frameAll', 'Frame all'],
     bReset: ['resetView', 'Reset view'], bWire: ['wireframe', 'Wireframe'], bGrid: ['grid', 'Grid + axes'],
     bRot: ['autoRotate', 'Auto-rotate'], bAdd: ['addToAssembly', 'Add to assembly']};
   function applyTitles(){
+    var mk = bindings.toggleMax.length ? ' (' + bindings.toggleMax.join(' / ') + ')' : '';
+    V4.forEach(function(v){ v.el.querySelector('.vpmax').title = 'Maximize / restore this view' + mk; v.el.querySelector('.vpl').title = 'Double-click: maximize / restore' + mk; });
     Object.keys(TITLES).forEach(function(id){ var t = TITLES[id], k = bindings[t[0]]; $(id).title = (typeof t[1] === 'function' ? t[1]() : t[1]) + (k.length ? ' (' + k.join(' / ') + ')' : ''); });
   }
   applyTitles();
@@ -1841,7 +1956,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       e.preventDefault(); var n = t === 'tabKeys' ? 'tabSet' : 'tabKeys'; showTab(n); $(n).focus();
     };
   });
-  function openSettings(){ showTab(setTab); $('rotStep').value = ROT_STEP; $('autoFocus').checked = AUTOFOCUS; $('setBack').hidden = false; $(setTab).focus(); }
+  function openSettings(){ showTab(setTab); $('rotStep').value = ROT_STEP; $('smartDist').value = SMART_DIST; $('smartAng').value = SMART_ANG; $('autoFocus').checked = AUTOFOCUS; $('setBack').hidden = false; $(setTab).focus(); }
   function closeSettings(){ capId = null; $('setBack').hidden = true; $('bSettings').focus(); }
   function settingsKey(e){
     if (capId === null) { if (e.key === 'Escape') { e.preventDefault(); closeSettings(); } return; }
@@ -1869,6 +1984,18 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       applyRotStep();
     } else { this.value = ROT_STEP; setMsg('Step must be between 0.1 and 180 degrees.'); }
   };
+  // read at event time by smartFind, so a change applies to the next drag
+  function smartInput(id, store, lo, hi, get, put, what){
+    $(id).onchange = function(){
+      var v = parseFloat(this.value);
+      if (isFinite(v) && v >= lo && v <= hi) {
+        put(v); setMsg('');
+        try { localStorage.setItem(store, String(v)); } catch (e) { setMsg('Could not save the ' + what + ' (browser storage unavailable); it lasts until you reload.'); }
+      } else { this.value = get(); setMsg('Smart snap ' + what + ' must be between ' + lo + ' and ' + hi + '.'); }
+    };
+  }
+  smartInput('smartDist', SMART_DIST_STORE, 0.1, 50, function(){ return SMART_DIST; }, function(v){ SMART_DIST = v; }, 'distance (mm)');
+  smartInput('smartAng', SMART_ANG_STORE, 0.5, 45, function(){ return SMART_ANG; }, function(v){ SMART_ANG = v; }, 'angle (degrees)');
   $('autoFocus').onchange = function(){
     AUTOFOCUS = this.checked; setMsg('');
     try { localStorage.setItem(AF_STORE, AUTOFOCUS ? '1' : '0'); } catch (e) { setMsg('Could not save the option (browser storage unavailable); it lasts until you reload.'); }
@@ -1888,8 +2015,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       return;
     }
     if (act === 'deselect' && e.key === 'Escape' && (fsEl() || Date.now() - fsChangeAt < 400)) return; // that Esc leaves full screen, it must not clear the selection
+    if (act === 'toggleMax' && !fourView) return; // single view: Space keeps its normal meaning
     if (act && ACTIONS[act]) {
       e.preventDefault();
+      if (e.key === ' ') eatSpaceUp = true;
       ACTIONS[act]();
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       var step = e.key === 'ArrowDown' ? 1 : -1, i, n;
@@ -1909,12 +2038,15 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     }
   }
   window.addEventListener('keydown', onKey);
+  // a focused button would otherwise click on Space keyup
+  var eatSpaceUp = false;
+  window.addEventListener('keyup', function(e){ if (e.key === ' ' && eatSpaceUp) { eatSpaceUp = false; e.preventDefault(); } });
 
   // right-click context menu: the toolbar commands grouped by section. Every item clicks the real button (or runs the real action), so
   // enabled state, toggles and side effects are exactly the toolbar's; asm = Assembly-only (shown disabled in Preview). Built on open.
   var CM = [
     ['Selection / Edit', [{id: 'bUndo'}, {id: 'bRedo'}, {id: 'bDel', asm: 1}, {label: 'Deselect', act: 'deselect'}, {id: 'bAdd'}]],
-    ['Transform', [{id: 'bMove', asm: 1}, {id: 'bRotG', asm: 1}, {id: 'bSnapR', asm: 1}, {id: 'bSnapT', asm: 1, label: 'Snap (bounding box)'}, {id: 'bSnapV', asm: 1}]],
+    ['Transform', [{id: 'bMove', asm: 1}, {id: 'bRotG', asm: 1}, {id: 'bSnapR', asm: 1}, {id: 'bSnapT', asm: 1, label: 'Snap (bounding box)'}, {id: 'bSnapF', asm: 1},{id: 'bSnapV', asm: 1}, {id: 'bResetT', asm: 1}]],
     ['Dimensions', [{id: 'bDimL', asm: 1}, {id: 'bDimA', asm: 1}]],
     ['View', [{id: 'bFrameAll', asm: 1}, {id: 'bReset'}, {id: 'bWire'}, {id: 'bGrid'}, {id: 'bFour'}, {id: 'bFull'}, {id: 'bRot'}]],
     ['File', [{id: 'bExpSTL'}, {id: 'bExpOBJ'}, {id: 'bSaveJSON'}]]
@@ -2027,8 +2159,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   };
   $('bMove').onclick = function(){ setGizmoMode('translate'); };
   $('bRotG').onclick = function(){ setGizmoMode('rotate'); };
+  $('bResetT').onclick = resetTransform;
   toggle('bSnapR', function(on){ allTC.forEach(function(t){ t.setRotationSnap(on ? THREE.MathUtils.degToRad(ROT_STEP) : null); }); });
   toggle('bSnapT', function(on){ bbSnap = on; });
+  toggle('bSnapF', function(on){ smartSnap = on; if (!on) clearSmartHi(); });
   $('bSnapV').onclick = function(){ var own = snapSt === 'pickA' || snapSt === 'pickB'; snapExit(); if (!own) snapStart(); }; // also cancels an armed dimension tool
   $('bDimL').onclick = function(){ dimStart('dist'); };
   $('bDimA').onclick = function(){ dimStart('angle'); };
@@ -2084,6 +2218,31 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       t.dispatchEvent({type: 'mouseUp'});
       return true;
     },
+    // gizmoDrag split in two, so a test can look at the drag preview before the release; alt = an Alt-drag copy
+    gizmoDragBegin: function(dx, dy, dz, rotZdeg, alt){
+      var t = tcActive()[0], o = t.object;
+      if (!o) return false;
+      altDrag = !!alt;
+      t.dispatchEvent({type: 'mouseDown'});
+      o.position.add(new THREE.Vector3(dx, dy, dz)); o.rotation.z += (rotZdeg || 0) * Math.PI / 180; o.updateMatrixWorld();
+      t.dispatchEvent({type: 'objectChange'});
+      return true;
+    },
+    gizmoDragEnd: function(){ tcActive()[0].dispatchEvent({type: 'mouseUp'}); },
+    // instance matrix without a commit (test setup)
+    setMatrix: function(uid, m){
+      var k = findInst(uid); if (k < 0) return false;
+      instances[k].matrix.fromArray(m);
+      if (instances[k].obj) applyMatrix(instances[k]);
+      if (marks.length > 1) placePivot();
+      rebuildDims();
+      return true;
+    },
+    commit: function(){ commit(); },
+    mark: function(uids){ setMarks(uids); },
+    matrix: function(uid){ var k = findInst(uid); return k < 0 ? null : instances[k].matrix.elements.slice(); },
+    smartPreview: function(){ var n = smartHi.children.filter(function(c){ return c.isLine; }).length; return {lines: n, ghosts: smartHi.children.length - n}; },
+    smartOpts: function(){ return {dist: SMART_DIST, angle: SMART_ANG}; },
     bbox: function(uid){ var k = findInst(uid); if (k < 0 || !instances[k].obj) return null; var b = new THREE.Box3().setFromObject(instances[k].obj); return {min: b.min.toArray(), max: b.max.toArray()}; },
     snapHelpers: function(){ return bbHi.children.length; },
     ghosts: function(){ return ghostGroup.children.length; },
@@ -2259,7 +2418,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   if (window.ResizeObserver) new ResizeObserver(resize).observe(view);
   resize();
 
-  var UI_TOGGLES = [['wire', 'bWire'], ['rot', 'bRot'], ['grid', 'bGrid'], ['four', 'bFour'], ['snapR', 'bSnapR'], ['snapT', 'bSnapT']];
+  var UI_TOGGLES = [['wire', 'bWire'], ['rot', 'bRot'], ['grid', 'bGrid'], ['four', 'bFour'], ['snapR', 'bSnapR'], ['snapT', 'bSnapT'], ['snapF', 'bSnapF']];
   function saveUI(){
     if (!uiReady) return; // never overwrite the stored state with defaults before it was restored
     try {

@@ -15,6 +15,12 @@ LDraw library use `--src <path to ldraw folder containing parts/ and p/>`; the c
 It writes `models/<id>.stl|obj|mtl` and `viewer/models.js`, then runs a self-check and exits non-zero on failure.
 `build_models.py` is the older hand-built parametric generator; it is still used for the steel ball (no LDraw part exists).
 
+Features: each part in `viewer/models.js` carries `features: [{k: "hole"|"shaft", p: "round"|"cross", o, d, u, r, l, n}]`
+(part frame, mm: axis origin `o`, unit direction `d`, cross orientation `u`, radius `r`, segment `l` = [from, to] along `d`,
+source LDraw subpart `n`). `build_models_ldraw.py` extracts them from the LDraw hole/peg/axle subparts; the viewer's Smart
+snap uses them. Note: running `build_models.py` rewrites `viewer/models.js` WITHOUT features (Smart snap then finds nothing),
+so run `build_models_ldraw.py` last.
+
 To view or build an assembly: `python -m http.server` inside `viewer/`, open `viewer.html` (see "Assembly editor").
 
 ## Assembly editor
@@ -35,11 +41,14 @@ Assembly mode "Reset view" and "Frame all" frame the whole assembly and "Wirefra
 | Multi-select | Ctrl+click toggles, Shift+click marks the range from the last clicked row (in the Assembly list a group header counts as its instances; rows inside a collapsed sidebar category are skipped). Ctrl+click on a part in the 3D view toggles it too. **Ctrl + left-drag** on the 3D view (Assembly mode, from anywhere, also from a part) draws a translucent rubber band; on release every instance whose projected bounding box touches the rectangle is ADDED to the marks (no occlusion test; nothing inside = nothing changes; Esc during the drag cancels; Orbit and the gizmo are off for that drag; a Ctrl+click under 4 px still toggles). Shift + left-drag still pans via the orbit controls. Selection is not an undo step. Marked rows are highlighted; Esc clears the marks. Exactly one marked: the gizmo uses the part's own axes. Two or more marked: one gizmo at the centroid of their bounding-box centres, in world axes; Move/Rotate (W/E) and the snap toggles work as usual and a drag moves or rotates (about that centroid) ALL marked instances as ONE undo step; the gizmo is hidden during vertex snap. Delete removes all marked instances (one undo step) |
 | Move / rotate | gizmo on the selected part; "Move" (W) / "Rotate" (E). Hold **Alt** when you start the gizmo drag to copy: the original(s) stay, a copy (or copies, for a multi-selection) ends up at the dragged position and becomes the selection; one undo step |
 | Camera | left drag orbits, **middle button (wheel pressed) drag pans**, wheel zooms; the right button does nothing |
-| Context menu | a right click (no drag) in the 3D view (single view or any Four-view viewport) opens a menu that repeats the toolbar commands by section: Selection / Edit (Undo, Redo, Delete, Deselect, Add to assembly), Transform (Move, Rotate, Snap 15°, Snap, Snap vertex), Dimensions (Dim line, Dim angle), View (Frame all, Reset view, Wireframe, Grid + axes, Four view, Full screen, Auto-rotate) and File (Export STL, Export OBJ, Save JSON). Each item runs the toolbar button itself, shows its shortcut, a check mark when a toggle is on, and is greyed out when the button is disabled (or, for Assembly-only items, in Preview mode). A right click on an unmarked part selects it first; on empty space the selection stays. A right click in the Assembly list does the same for the row; in the part list only the Selection / Edit section shows. Esc, an outside click, scrolling, resizing or switching windows close it; Up/Down/Home/End move and Enter runs an item |
+| Rotate by wheel | **Alt** / **Shift** / **Ctrl** + wheel rotates the selected parts about the world X / Y / Z axis through the centre of their bounding boxes, by the rotate-snapping step (Settings) per notch; one undo step per burst of notches |
+| Reset transform | toolbar button "Reset transform" (also in the context menu; no default key, bindable in Settings) sets the rotation (and scale) of the selected parts back to identity; each part's bounding-box centre stays where it is; one undo step, none if nothing changed |
+| Context menu | a right click (no drag) in the 3D view (single view or any Four-view viewport) opens a menu that repeats the toolbar commands by section: Selection / Edit (Undo, Redo, Delete, Deselect, Add to assembly), Transform (Move, Rotate, Snap 15°, Snap, Smart snap, Snap vertex, Reset transform), Dimensions (Dim line, Dim angle), View (Frame all, Reset view, Wireframe, Grid + axes, Four view, Full screen, Auto-rotate) and File (Export STL, Export OBJ, Save JSON). Each item runs the toolbar button itself, shows its shortcut, a check mark when a toggle is on, and is greyed out when the button is disabled (or, for Assembly-only items, in Preview mode). A right click on an unmarked part selects it first; on empty space the selection stays. A right click in the Assembly list does the same for the row; in the part list only the Selection / Edit section shows. Esc, an outside click, scrolling, resizing or switching windows close it; Up/Down/Home/End move and Enter runs an item |
 | Four view | "Four view" (key 4), in Preview and Assembly mode: a 2x2 grid with Top (top left, looking down, +X right, +Y up), Perspective (top right, the normal orbit camera), Front (bottom left, from -Y, +X right, +Z up) and Left (bottom right, from -X looking along +X, +Z up). Top/Front/Left are orthographic: wheel zooms, middle drag pans, no rotation. Frame all / Reset view re-frame all four. Picking, Ctrl+click, Ctrl+drag box select, vertex snap and the gizmo work in every viewport (each viewport shows its own gizmo; a drag in the Top view moves X/Y only, ...). The ground grid is shown in Top and Perspective only. "Max" in a viewport corner (or a double-click on its label) maximizes that viewport over the whole 3D view and restores the 2x2 layout; the choice is remembered for the session. Auto-rotate turns the Perspective view only. Four view is not saved |
 | Full screen | "Full screen" (Alt+Enter) uses the browser full screen: header, side panels, status and footer are hidden and the 3D view fills the screen with an "Exit full screen" button (and the Four view controls) floating inside it. Esc or F11 leave it too (that Esc does not clear the selection); all shortcuts keep working |
 | Snap 15° | toggle for 15° rotation steps (default off; key A) |
 | Snap | toggle for the bounding-box snap (default off; key Z), see "Snap" below. The gizmo works in the part's local axes |
+| Smart snap | toggle for the hole/shaft axis snap (default off; key D), independent of Snap; see "Smart snap" below |
 | Snap vertex | "Snap vertex" or S (Assembly mode, at least 2 parts), see below |
 | Dim line | "Dim line" (Assembly mode, no default key): distance between 2 mesh vertices, see "Dimensions" below |
 | Dim angle | "Dim angle" (Assembly mode, no default key): angle between two lines (4 mesh vertices + placement click), see "Dimensions" below |
@@ -99,10 +108,10 @@ viewer silently falls back to session-only behaviour.
 The "Settings" button (header) lists every keyboard action with its shortcut. Click a shortcut, press the new combination
 (Ctrl/Shift/Alt + key; Esc cancels), or use "Clear" / "Reset" per action and "Reset shortcuts". A combination already used by
 another action is refused with the name of that action. Defaults: Move gizmo W, Rotate gizmo E, Snap vertex S, Delete Del,
-Undo Ctrl+Z, Redo Ctrl+Y / Ctrl+Shift+Z, Deselect Esc, Snap 15° A, Snap Z, Switch Preview / Assembly Q, Toggle four view 4, Toggle full screen Alt+Enter, Frame all F, Reset view R, Toggle wireframe X,
+Undo Ctrl+Z, Redo Ctrl+Y / Ctrl+Shift+Z, Deselect Esc, Snap 15° A, Snap Z, Smart snap D, Switch Preview / Assembly Q, Toggle four view 4, Maximize / restore view Space (Four view only: restores the maximized viewport, else maximizes the one under the pointer, else the last clicked one; same as "Max"), Toggle full screen Alt+Enter, Frame all F, Reset view R, Toggle wireframe X,
 Toggle grid G, Toggle auto-rotate T (it was A in an earlier version: a saved auto-rotate = A override is ignored, the
 Snap 15° default keeps A), Add to assembly Ctrl+Enter. Up/Down list stepping and Backspace (snap re-pick) are fixed and cannot be bound;
-Esc always leaves snap mode. Shortcuts are ignored while typing in a field or while the dialog is open. The dialog has two tabs, "Shortcuts" and "Settings" (rotation snap step and the "Autofocus to selected" option, which re-aims the orbit at a new selection; saved in localStorage); during an Alt-drag copy the source parts show as translucent ghosts at their start position. The browser keeps
+Esc always leaves snap mode. Shortcuts are ignored while typing in a field or while the dialog is open. The dialog has two tabs, "Shortcuts" and "Settings" (rotation snap step, the Smart snap distance and angle tolerances and the "Autofocus to selected" option, which re-aims the orbit at a new selection; saved in localStorage); during an Alt-drag copy the source parts show as translucent ghosts at their start position. The browser keeps
 some combinations for itself (e.g. Ctrl+W, Ctrl+T, Ctrl+N), they cannot be captured. Shift+letter still triggers a plain
 letter binding (as before) unless that Shift combination is bound itself. Bindings are saved in localStorage
 (`eve3.keys`, only the changed actions); missing or corrupt data falls back to the defaults. Button tooltips show the
@@ -121,7 +130,7 @@ or imported, there; "(original category)" in that list puts them back. The part'
 override is stored. Custom categories and overrides are kept in localStorage (`eve3.cats`; corrupt data and unknown part ids
 or categories are ignored). They are a viewer preference: Save/Load JSON does not contain them. Search matches the
 current category name too.
-The viewer also remembers its UI state between runs in one localStorage key, `eve3.ui` (written when the page is closed or hidden, validated on load): the Wireframe, Auto-rotate, Grid, Four view and both Snap toggles, the Move/Rotate gizmo mode, which categories and Assembly groups are open, and the import scale and unit preset (Full screen, Snap vertex, the Dim line / Dim angle tools and the Preview/Assembly mode are not kept).
+The viewer also remembers its UI state between runs in one localStorage key, `eve3.ui` (written when the page is closed or hidden, validated on load): the Wireframe, Auto-rotate, Grid, Four view and the three Snap toggles (Snap 15°, Snap, Smart snap), the Move/Rotate gizmo mode, which categories and Assembly groups are open, and the import scale and unit preset (Full screen, Snap vertex, the Dim line / Dim angle tools and the Preview/Assembly mode are not kept).
 
 ### Snap
 
@@ -135,6 +144,22 @@ The "Snap" button (key Z) is a bounding-box snap, off by default. While you drag
   group: the group rotation snaps the same way). This simpler rule replaces "match the neighbour's rotation". It is skipped while
   "Snap 15°" is on (15° wins). When the rotate drag ends the move snap runs once so rotated parts sit flush.
 - The constants (`SNAP_DIST`, `SNAP_NEAR`, `SNAP_ROT`) are at the top of the script in `viewer.html`. One drag is one undo step.
+
+### Smart snap
+
+The "Smart snap" button (key D, off by default, independent of "Snap") aligns pegs, axles and holes. While you drag the
+selected part(s) with the gizmo (Move or Rotate, single part or group), it looks for the best pair of a shaft and a hole
+axis between the dragged set and the other parts (math in `viewer/snap.js`, `EVESNAP`):
+- A pair counts when the axes are within the distance tolerance (default 4 mm) and the angle tolerance (default 10°), the
+  profiles fit (a cross axle fits cross and round holes, a round pin only round holes) and the shaft is not too thick for
+  the hole. Only parts within 60 mm are considered; parts without feature data (imported STL/OBJ) never snap.
+- During the drag nothing extra moves: the two matched axes are drawn as cyan lines and a translucent ghost shows where
+  the dragged part(s) will land.
+- On release the dragged set moves to that pose: axes collinear, ends flush with the hole when they are within the
+  distance tolerance (otherwise free along the axis), cross on cross also turns to the nearest 90°. The bounding-box Snap
+  runs first; the whole drag (snap included) is one undo step, and an Alt-drag copy lands snapped.
+- Settings tab: "Smart snap distance (mm)" (0.1 to 50, default 4, saved as `eve3.smartdist`) and "Smart snap angle (°)"
+  (0.5 to 45, default 10, saved as `eve3.smartang`); a change applies to the next drag.
 
 ### Export
 
@@ -195,7 +220,7 @@ Unit tests for `viewer/io.js` (parsers, export, JSON, keyboard bindings); prints
 - [ ] Assembly mode, 3 parts: Ctrl+drag a rectangle over two of them (rubber band visible, status shows "Box select: 2 added"), a second rectangle adds to the marks, Esc during a drag cancels, plain drag still orbits
 - [ ] Mark two parts: one gizmo at their centre; drag it (Move, then Rotate): both move/rotate together, the unmarked part stays, one Ctrl+Z restores both, Ctrl+Y redoes
 - [ ] Snap vertex (S) with two marked: vertex on a marked part, then on an unmarked part: both marked parts move by the same delta
-- [ ] Keys A / Z toggle Snap 15° / Snap, T toggles auto-rotate, Q switches Preview / Assembly
+- [ ] Keys A / Z / D toggle Snap 15° / Snap / Smart snap, T toggles auto-rotate, Q switches Preview / Assembly
 - [ ] Four view (key 4): four labelled viewports (Top, Perspective, Front, Left); click a part in Front selects it, drag its gizmo in Top moves X/Y only; "Max" maximizes a viewport and restores; switching it off gives the normal single view (orbit, pick, box select unchanged)
 - [ ] Full screen (button or Alt+Enter): only the 3D view is visible with an "Exit full screen" button; Esc exits, panels come back, selection kept
 - [ ] Snap on: drag a beam toward another until about 2 mm apart: it jumps flush (orange outline of the neighbour while it snaps); with Snap off it stays 2 mm apart; 20 mm apart nothing snaps; a rotation within 5° of a right angle snaps to it
