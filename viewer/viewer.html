@@ -93,6 +93,10 @@ body.fs header,body.fs aside,body.fs #addRow,body.fs #info,body.fs footer{displa
 aside#asm.drop{outline:2px solid var(--accent);outline-offset:-2px}
 #rband{position:absolute;z-index:2;pointer-events:none;border:1px solid var(--accent);background:var(--accent);opacity:.3}
 #rband[hidden]{display:none}
+#thumb{position:fixed;z-index:15;pointer-events:none;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+#thumb[hidden]{display:none}
+#thumb img{display:block;width:180px;height:180px}
+#thumb div{width:180px;font-size:12px;text-align:center;white-space:pre-line;overflow-wrap:anywhere}
 #ctxMenu{position:fixed;z-index:20;min-width:210px;max-width:calc(100vw - 8px);max-height:calc(100vh - 8px);overflow-y:auto;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 24px rgba(0,0,0,.35);outline:none;user-select:none}
 #ctxMenu .cmh{font-size:11px;color:var(--muted);padding:6px 8px 2px;text-transform:uppercase;letter-spacing:.04em}
 #ctxMenu .cmg+.cmg{border-top:1px solid var(--border);margin-top:4px}
@@ -192,6 +196,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     </div>
   </aside>
 </main>
+<div id="thumb" hidden><img alt=""><div></div></div>
 <div id="setBack" hidden>
   <div id="setBox" role="dialog" aria-modal="true" aria-labelledby="setTitle">
     <h2 id="setTitle">Settings</h2>
@@ -299,9 +304,12 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     return null;
   }
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 0.7));
-  var d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1, -1.5, 2); scene.add(d1);
-  var d2 = new THREE.DirectionalLight(0xffffff, 0.35); d2.position.set(-2, 1, -1); scene.add(d2);
+  function addLights(sc){ // the main scene and the hover thumbnails
+    sc.add(new THREE.HemisphereLight(0xffffff, 0x556070, 0.7));
+    var d1 = new THREE.DirectionalLight(0xffffff, 0.8); d1.position.set(1, -1.5, 2); sc.add(d1);
+    var d2 = new THREE.DirectionalLight(0xffffff, 0.35); d2.position.set(-2, 1, -1); sc.add(d2);
+  }
+  addLights(scene);
 
   var group = null, helpers = new THREE.Group(), wire = false, current = null;
   scene.add(helpers);
@@ -606,7 +614,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   function onTC(type, fn){ allTC.forEach(function(t){ t.addEventListener(type, fn); }); }
   onTC('mouseDown', function(e){
     dragCopy = altDrag; altDrag = false; smartMoved = false;
-    clearGhosts();
+    clearGhosts(); clearRotHi();
     if (e.target.object === pivot) {
       grp = {p0: pivot.position.clone(), recs: marks.map(function(u){ var i = instances[findInst(u)]; return {i: i, m: i.matrix.elements.slice()}; })};
       if (dragCopy) grp.recs.forEach(function(r){ addGhost(r.i.partId, r.m); });
@@ -646,13 +654,14 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     // tolerance: decompose/compose round trip after undo can differ by an ulp
     for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - s[j]) > 1e-9) { if (cp) dropCopies([{i: i, m: s}]); else commit(); return; }
   });
-  onTC('mouseUp', function(){ rebuildDims(); }); // after the handler above: its end-of-drag snap (rotate) may have moved parts once more
+  onTC('mouseUp', function(){ rebuildDims(); setTimeout(updateRotHi); }); // after the handler above: its end-of-drag snap (rotate) may have moved parts once more; the gizmo clears `dragging` after this event
   // Alt/Shift/Ctrl + wheel: rotate the marked parts about a world axis (Alt = X, Shift = Y, Ctrl = Z) through the centre of their bounding boxes, ROT_STEP degrees per notch.
   // A burst of notches is ONE undo step: committed 400 ms after the last notch, or at once before undo/redo.
   var wheelRotTimer = null;
   function flushWheelRot(){ if (wheelRotTimer === null) return; clearTimeout(wheelRotTimer); wheelRotTimer = null; commit(); }
+  function wheelAxis(e){ return e.altKey ? 0 : e.shiftKey ? 1 : (e.ctrlKey || e.metaKey) ? 2 : -1; } // modifier flags -> wheel-rotate axis (Alt > Shift > Ctrl), -1 = none
   window.addEventListener('wheel', function(e){
-    var ax = e.altKey ? 0 : e.shiftKey ? 1 : (e.ctrlKey || e.metaKey) ? 2 : -1;
+    var ax = wheelAxis(e);
     if (ax < 0 || mode !== 'assembly' || snapSt !== 'off' || !marks.length || !vpAt(e.target)) return; // otherwise the wheel zooms as usual
     e.preventDefault(); e.stopPropagation(); // also stops the browser page zoom (Ctrl+wheel) and the OrbitControls zoom
     var d = e.deltaY || e.deltaX; // Shift+wheel arrives as deltaX in some browsers
@@ -667,8 +676,47 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     insts.forEach(function(i){ i.matrix.premultiply(M); applyMatrix(i); });
     if (marks.length > 1) placePivot();
     rebuildDims();
+    setModKeys(e); updateRotHi(); // the AABB (ring radius) changes with the rotation
     clearTimeout(wheelRotTimer); wheelRotTimer = setTimeout(function(){ wheelRotTimer = null; commit(); }, 400);
   }, {capture: true, passive: false});
+  // rotation ghost (rotHi): while Alt / Shift / Ctrl is held, a thin 1px ring + faint disc around the marked set in the plane of that key's wheel-rotate axis,
+  // with chevron arrowheads pointing the way a wheel-UP notch turns the parts. Not in `built`: never picked/exported/framed. modKeys: flags of the last key/pointer event.
+  var rotHi = new THREE.Group(), modKeys = {}, rotKey = '', ROT_COL = [0xff4040, 0x40d060, 0x4080ff], ROT_MIN_R = 10; // ROT_MIN_R: mm, keeps tiny parts' ring visible
+  scene.add(rotHi);
+  function setModKeys(e){ modKeys = {altKey: e.altKey, shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey}; }
+  function clearRotHi(){ rotKey = ''; while (rotHi.children.length) { var h = rotHi.children.pop(); h.geometry.dispose(); h.material.dispose(); } }
+  function updateRotHi(){
+    var ax = wheelAxis(modKeys || {});
+    if (ax < 0 || mode !== 'assembly' || snapSt !== 'off' || !marks.length || tcBusy()) { if (rotKey) clearRotHi(); return; } // same gate as the wheel handler
+    var c = new THREE.Vector3(), b = new THREE.Vector3(), ub = new THREE.Box3();
+    marks.forEach(function(u){ var bx = instBox(instances[findInst(u)]); c.add(bx.getCenter(b)); ub.union(bx); });
+    c.divideScalar(marks.length);
+    var R = Math.max(0.6 * ub.getSize(b).length(), ROT_MIN_R), key = [ax, c.x, c.y, c.z, R].map(function(v){ return v.toFixed(3); }).join();
+    if (key === rotKey) return;
+    clearRotHi(); rotKey = key;
+    function mat(o){ return new THREE.MeshBasicMaterial({color: ROT_COL[ax], transparent: true, opacity: o, depthTest: false, depthWrite: false, side: THREE.DoubleSide}); }
+    function lmat(o){ return new THREE.LineBasicMaterial({color: ROT_COL[ax], transparent: true, opacity: o, depthTest: false, depthWrite: false}); } // 1px lines, like the axes helper
+    // built in the local XY plane with +Z = the axis, so increasing angle = positive rotation (right-hand rule) = what a wheel-up notch applies
+    var disc = new THREE.Mesh(new THREE.CircleGeometry(R, 64), mat(0.06)), pts = [], i;
+    for (i = 0; i < 96; i++) pts.push(new THREE.Vector3(R * Math.cos(i * Math.PI / 48), R * Math.sin(i * Math.PI / 48), 0));
+    var ring = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), lmat(0.9));
+    ring.userData.R = R; disc.renderOrder = 997; ring.renderOrder = 999;
+    rotHi.add(disc, ring);
+    [0, 1, 2].forEach(function(k){ // 3 chevrons 120 deg apart: from any view at least one is seen side-on
+      var A = Math.PI / 2 + k * 2 * Math.PI / 3, L = R * 0.06, // '>' with its tip on the ring at +Y (local) = the tangent
+        chev = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-L, -L * 1.5, 0), new THREE.Vector3(0, 0, 0), new THREE.Vector3(L, -L * 1.5, 0)]), lmat(0.9));
+      chev.position.set(R * Math.cos(A), R * Math.sin(A), 0);
+      chev.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(-Math.sin(A), Math.cos(A), 0));
+      chev.renderOrder = 999; rotHi.add(chev);
+    });
+    var n = new THREE.Vector3(); n.setComponent(ax, 1);
+    rotHi.position.copy(c); rotHi.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  }
+  window.addEventListener('keydown', function(e){ if (!e.repeat) { setModKeys(e); updateRotHi(); } });
+  window.addEventListener('keyup', function(e){ setModKeys(e); updateRotHi(); });
+  window.addEventListener('blur', function(){ modKeys = {}; clearRotHi(); });
+  // a key held across a focus change, a missed keyup, or the pointer leaving a gizmo handle (tcBusy) after a drag
+  window.addEventListener('pointermove', function(e){ if (wheelAxis(e) >= 0 || rotKey) { setModKeys(e); updateRotHi(); } });
   // Reset transform: rotation (and scale) of the marked parts back to identity, bounding-box centre of each part stays put. One undo step; no commit if nothing changed.
   function resetTransform(){
     if (mode !== 'assembly' || !marks.length || tcBusy() || snapSt !== 'off') return;
@@ -684,7 +732,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       for (var j = 0; j < 16; j++) if (Math.abs(i.matrix.elements[j] - old[j]) > 1e-9) changed = true;
     });
     if (marks.length > 1) placePivot();
-    rebuildDims();
+    rebuildDims(); updateRotHi();
     if (changed) commit();
     setStatus('Reset transform: ' + n + ' part(s)');
   }
@@ -905,6 +953,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       if (!ub.isEmpty()) { var ob = fourView ? V4[1].orbit : controls; ub.getCenter(ob.target); ob.update(); }
     }
     lastMarkKey = mk;
+    updateRotHi(); // selection, rebuild (undo/redo, mode switch) and snap-mode changes all pass here
   }
   function setSelection(uid){ var ok = uid !== null && uid !== undefined; setMarks(ok ? [uid] : [], ok ? 'i:' + uid : null); }
   function setMarksKeep(uids, key){ keepDimSel = true; try { setMarks(uids, key); } finally { keepDimSel = false; } } // mixed part + dimension selection
@@ -1462,10 +1511,10 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     var L = $('asmList'), groups = [], by = Object.create(null);
     L.textContent = ''; asmRows = [];
     instances.forEach(function(i){ (by[i.partId] || (by[i.partId] = groups[groups.push({id: i.partId, list: []}) - 1])).list.push(i); });
-    function row(key, uids, text, cls){
+    function row(key, uids, text, cls, pid){
       var b = document.createElement('button');
       b.className = 'item ' + cls + (uids.every(isMarked) ? ' sel' : '');
-      b.textContent = text;
+      b.textContent = text; b.dataset.id = pid; // part id, for the hover preview
       b.onclick = function(e){ asmClick(e, key, uids); };
       asmRows.push({key: key, uids: uids});
       return b;
@@ -1476,9 +1525,9 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       var c = document.createElement('button'); c.className = 'xbtn'; c.textContent = open ? '▾' : '▸';
       c.title = open ? 'Collapse' : 'Expand'; c.setAttribute('aria-label', c.title); c.setAttribute('aria-expanded', open);
       c.onclick = function(){ collapsed[g.id] = open; renderAsmList(); };
-      h.appendChild(c); h.appendChild(row('g:' + g.id, uids, name + ' ×' + uids.length, 'grp'));
+      h.appendChild(c); h.appendChild(row('g:' + g.id, uids, name + ' ×' + uids.length, 'grp', g.id));
       L.appendChild(h);
-      if (open) g.list.forEach(function(i){ L.appendChild(row('i:' + i.uid, [i.uid], name + ' #' + i.uid, 'sub')); });
+      if (open) g.list.forEach(function(i){ L.appendChild(row('i:' + i.uid, [i.uid], name + ' #' + i.uid, 'sub', g.id)); });
     });
     $('asmCount').textContent = instances.length + (instances.length === 1 ? ' instance' : ' instances');
     updateDel();
@@ -1499,7 +1548,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
 
   function setMode(m){
     if (m === mode) return;
-    snapExit();
+    snapExit(); thumbHide();
     mode = m;
     $('bPrev').setAttribute('aria-pressed', m === 'preview');
     $('bAsm').setAttribute('aria-pressed', m === 'assembly');
@@ -1776,6 +1825,67 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
   }
   $('search').addEventListener('input', applyFilter);
   buildSidebar();
+
+  // ---- hover preview: a rendered picture of the part next to a row of the part list or the Assembly list
+  // cached per part object like boxCache (a re-imported part is a new object, so it never gets a stale picture)
+  var thumbR = null, thumbCache = new Map(), thumbRenders = 0, thumbT = 0, thumbFor = null; // thumbR false = no WebGL for thumbnails
+  function thumbURL(p){
+    var u = thumbCache.get(p);
+    if (u) return u;
+    if (thumbR === false) return null;
+    if (!thumbR) {
+      try { thumbR = new THREE.WebGLRenderer({antialias: true, alpha: true}); }
+      catch (e) { thumbR = false; return null; }
+      thumbR.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); thumbR.setSize(180, 180, false); thumbR.setClearColor(0, 0);
+    }
+    var sc = new THREE.Scene(), g = makePartGroup(p, false), b = partBox(p), sp = b.getBoundingSphere(new THREE.Sphere()), r = Math.max(sp.radius, 0.5);
+    addLights(sc); sc.add(g);
+    // orthographic, fitted to the projected bbox corners (a sphere fit leaves long parts tiny)
+    var cam = new THREE.OrthographicCamera(-1, 1, 1, -1, r * 0.5, r * 6), v = new THREE.Vector3(), h = 0;
+    cam.up.set(0, 0, 1);
+    cam.position.copy(sp.center).addScaledVector(new THREE.Vector3(1, -1.2, 0.9).normalize(), r * 3);
+    cam.lookAt(sp.center); cam.updateMatrixWorld();
+    for (var k = 0; k < 8; k++) {
+      v.set(k & 1 ? b.max.x : b.min.x, k & 2 ? b.max.y : b.min.y, k & 4 ? b.max.z : b.min.z).applyMatrix4(cam.matrixWorldInverse);
+      h = Math.max(h, Math.abs(v.x), Math.abs(v.y));
+    }
+    h = Math.max(h, 0.5) * 1.06;
+    cam.left = cam.bottom = -h; cam.right = cam.top = h; cam.updateProjectionMatrix();
+    try { thumbR.render(sc, cam); u = thumbR.domElement.toDataURL('image/png'); } // same task as the render: no preserveDrawingBuffer needed
+    finally { disposeObj(g); }
+    thumbRenders++; thumbCache.set(p, u);
+    return u;
+  }
+  function thumbHide(){ clearTimeout(thumbT); thumbFor = null; $('thumb').hidden = true; }
+  function thumbShow(el){
+    try {
+      var p = lookupPart(el.dataset.id), u = p && thumbURL(p), t = $('thumb');
+      if (!u || !el.isConnected) return;
+      t.firstChild.src = u;
+      t.lastChild.textContent = p.name + (p.dims_mm ? '\n' + p.dims_mm.map(function(n){ return +n.toFixed(1); }).join(' × ') + ' mm' : '');
+      t.hidden = false;
+      var r = el.getBoundingClientRect(), side = el.closest('aside').getBoundingClientRect(), w = t.offsetWidth, h = t.offsetHeight;
+      var x = el.closest('#asm') ? side.left - 8 - w : side.right + 8, y = r.top + r.height / 2 - h / 2; // Assembly list is the right panel: open to its left
+      t.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+      t.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+    } catch (e) { thumbHide(); }
+  }
+  // delegated: both lists are rebuilt wholesale
+  [list, $('asmList')].forEach(function(c){
+    c.addEventListener('mouseover', function(e){
+      var el = e.target.closest ? e.target.closest('[data-id]') : null;
+      if (!el || el === thumbFor || e.buttons) return; // never during a press or drag
+      thumbHide(); thumbFor = el;
+      thumbT = setTimeout(function(){ thumbShow(el); }, 150);
+    });
+    c.addEventListener('mouseout', function(e){
+      var to = e.relatedTarget;
+      if (!to || !to.closest || to.closest('[data-id]') !== thumbFor) thumbHide();
+    });
+    ['scroll', 'pointerdown', 'dragstart'].forEach(function(n){ c.addEventListener(n, thumbHide); });
+  });
+  window.addEventListener('blur', thumbHide);
+  window.addEventListener('keydown', function(e){ if (e.key === 'Escape') thumbHide(); });
 
   // import: STL / OBJ(+MTL by basename) -> user parts; one commit for the whole selection
   function importNote(t, err){ var d = document.createElement('div'); d.textContent = t; if (err) d.className = 'err'; $('importMsg').appendChild(d); }
@@ -2235,7 +2345,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
       instances[k].matrix.fromArray(m);
       if (instances[k].obj) applyMatrix(instances[k]);
       if (marks.length > 1) placePivot();
-      rebuildDims();
+      rebuildDims(); updateRotHi();
       return true;
     },
     commit: function(){ commit(); },
@@ -2245,6 +2355,16 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     smartOpts: function(){ return {dist: SMART_DIST, angle: SMART_ANG}; },
     bbox: function(uid){ var k = findInst(uid); if (k < 0 || !instances[k].obj) return null; var b = new THREE.Box3().setFromObject(instances[k].obj); return {min: b.min.toArray(), max: b.max.toArray()}; },
     snapHelpers: function(){ return bbHi.children.length; },
+    // rotation ghost: dirSign = sign of the arrow's direction as an angle about the world +axis (+1 = counter-clockwise looking down the +axis)
+    rotGhost: function(){
+      if (!rotHi.children.length) return {axis: null, children: 0, center: null, radius: null, normal: null, dirSign: null};
+      rotHi.updateMatrixWorld(true);
+      var n = new THREE.Vector3(0, 0, 1).applyQuaternion(rotHi.quaternion), k = [0, 1, 2].reduce(function(a, j){ return Math.abs(n.getComponent(j)) > Math.abs(n.getComponent(a)) ? j : a; }, 0);
+      var cone = rotHi.children[2], p = cone.getWorldPosition(new THREE.Vector3()).sub(rotHi.position), t = new THREE.Vector3(0, 1, 0).applyQuaternion(cone.getWorldQuaternion(new THREE.Quaternion()));
+      var e = new THREE.Vector3(); e.setComponent(k, 1);
+      return {axis: 'xyz'[k], children: rotHi.children.length, center: rotHi.position.toArray(), radius: rotHi.children[1].userData.R, normal: n.toArray(),
+        dirSign: Math.sign(p.cross(t).dot(e)), color: rotHi.children[1].material.color.getHex(), inBuilt: built.indexOf(rotHi) >= 0};
+    },
     ghosts: function(){ return ghostGroup.children.length; },
     setGizmoMode: function(m){ if (m === 'translate' || m === 'rotate') setGizmoMode(m); },
     snapMode: function(on){ if (on) snapStart(); else snapExit(); return snapSt; },
@@ -2264,6 +2384,7 @@ footer{padding:6px 16px;font-size:12px;color:var(--muted);background:var(--panel
     },
     lastSnap: function(){ return lastSnapRec ? JSON.parse(JSON.stringify(lastSnapRec)) : null; },
     library: function(){ return {builtin: PARTS.length, user: userParts.map(function(p){ return p.id; }), removed: Object.keys(removedParts)}; },
+    thumbRenders: function(){ return thumbRenders; },
     sidebarCount: function(){ return document.querySelectorAll('#list .item').length; },
     exportInfo: function(){ var b = bakeCurrent(); return {tris: EVEIO.countTris(b), parts: b.items.length}; },
     saveJSON: function(){ return assemblyJSON(); },
